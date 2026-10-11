@@ -100,6 +100,22 @@ export type CameraStatus =
   | 'searching'
   | 'error';
 
+export interface DetectedObject {
+  id: string;
+  class: 'person' | 'dog' | string;
+  score: number;
+  bbox: [number, number, number, number]; // [x, y, width, height] in px or normalized
+  timestamp: string;
+}
+
+export type TrackingStatus =
+  | 'idle'
+  | 'loading_model'
+  | 'waiting_hand'
+  | 'hand_detected'
+  | 'gesture_recognized'
+  | 'error';
+
 export interface GestureState {
   isActive: boolean;
   isCameraActive: boolean;
@@ -107,6 +123,11 @@ export interface GestureState {
   currentGesture: GestureType;
   confidence: number;
   handDetected: boolean;
+  detectedHandCount: number;
+  rawPinchDistance: number;
+  rawExtensionScore: number;
+  centroid: { x: number; y: number };
+  trackingStatus: TrackingStatus;
   lastAction: string;
   lastActionTime: number;
   sensitivity: number;

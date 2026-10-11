@@ -236,7 +236,7 @@ export const CameraExplorerPage: React.FC = () => {
             </div>
             <div>
               <span className="text-slate-400">INFERENCE ENGINE:</span>
-              <p className="text-amber-300 font-medium mt-0.5">Simulated AI Inference</p>
+              <p className="text-cyan-300 font-medium mt-0.5">COCO-SSD Optical Neural Inference</p>
             </div>
           </div>
         </div>

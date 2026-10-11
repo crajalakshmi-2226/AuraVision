@@ -42,6 +42,10 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
     setSelectedCameraId,
     setActiveNav,
     addNotification,
+    mapTelemetry,
+    setMapTelemetry,
+    userLocation,
+    setUserLocation,
   } = useApp();
 
   const [mapStyle, setMapStyle] = useState<'osm_tactical_dark' | 'osm_standard' | 'satellite'>('osm_tactical_dark');
@@ -82,13 +86,30 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
     const markersGroup = L.layerGroup().addTo(map);
     markersLayerRef.current = markersGroup;
 
+    // Track coordinates and zoom level in real-time
+    const handleMapTransformChange = () => {
+      const center = map.getCenter();
+      const zoom = map.getZoom();
+      setMapTelemetry({
+        lat: Number(center.lat.toFixed(4)),
+        lng: Number(center.lng.toFixed(4)),
+        zoom: zoom,
+      });
+    };
+
+    map.on('moveend', handleMapTransformChange);
+    map.on('zoomend', handleMapTransformChange);
+    handleMapTransformChange();
+
     mapInstanceRef.current = map;
 
     return () => {
+      map.off('moveend', handleMapTransformChange);
+      map.off('zoomend', handleMapTransformChange);
       map.remove();
       mapInstanceRef.current = null;
     };
-  }, []);
+  }, [setMapTelemetry]);
 
   // Handle tile style switching
   useEffect(() => {
@@ -297,6 +318,17 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
     perimeterPolygon.addTo(layer);
   }, [cameras, alerts, activeFilter, onCameraSelect, setSelectedCameraId, setActiveNav]);
 
+  // Helper for Haversine distance
+  const getDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3;
+    const p1 = (lat1 * Math.PI) / 180;
+    const p2 = (lat2 * Math.PI) / 180;
+    const dp = ((lat2 - lat1) * Math.PI) / 180;
+    const dl = ((lon2 - lon1) * Math.PI) / 180;
+    const a = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+    return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  };
+
   // Request browser geolocation on user action
   const handleUseLocation = () => {
     if (!navigator.geolocation) {
@@ -313,11 +345,29 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
         setUserLocating(false);
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        setLocationStatus(`User Location: ${lat.toFixed(4)}, ${lng.toFixed(4)} (Accuracy ~${Math.round(pos.coords.accuracy)}m)`);
-        addNotification(`User location calibrated: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+        setUserLocation({ lat, lng, accuracy: pos.coords.accuracy });
+
+        // Calculate nearby configured cameras
+        const nearbyCams = cameras
+          .map((c) => ({
+            ...c,
+            distance: getDistanceMeters(lat, lng, c.coordinates[0], c.coordinates[1]),
+          }))
+          .sort((a, b) => a.distance - b.distance);
+
+        const closest = nearbyCams[0];
+        let nearbySummary = '';
+        if (closest && closest.distance < 1000) {
+          nearbySummary = `Nearest configured camera: "${closest.name}" (${closest.distance}m away).`;
+        } else {
+          nearbySummary = 'No authorized CCTV cameras configured within 1km of this location.';
+        }
+
+        setLocationStatus(`Your Location: ${lat.toFixed(4)}, ${lng.toFixed(4)} (Accuracy ~${Math.round(pos.coords.accuracy)}m). ${nearbySummary}`);
+        addNotification(`User location calibrated: ${lat.toFixed(4)}, ${lng.toFixed(4)}. ${nearbySummary}`);
 
         if (mapInstanceRef.current) {
-          mapInstanceRef.current.setView([lat, lng], 15, { animate: true });
+          mapInstanceRef.current.setView([lat, lng], 16, { animate: true });
 
           // Update or place user marker
           if (userMarkerRef.current) {
@@ -338,7 +388,17 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
               iconAnchor: [16, 16],
             });
             const marker = L.marker([lat, lng], { icon }).addTo(mapInstanceRef.current);
-            marker.bindPopup('<div style="font-family: sans-serif; font-size: 11px; padding: 4px;">Verified Device Location</div>');
+            const popupHtml = `
+              <div style="font-family: sans-serif; font-size: 11px; padding: 6px; min-width: 180px;">
+                <div style="font-weight: bold; color: #059669; margin-bottom: 2px;">Verified Device Location</div>
+                <div>Coords: ${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
+                <div style="margin-top: 4px; color: #64748b; font-size: 10px;">${nearbySummary}</div>
+                <div style="margin-top: 4px; font-size: 9px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 4px;">
+                  Note: Optical detection of people or dogs requires an authorized camera stream covering this area.
+                </div>
+              </div>
+            `;
+            marker.bindPopup(popupHtml).openPopup();
             userMarkerRef.current = marker;
           }
         }
@@ -409,6 +469,31 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
               }`}
             >
               Incidents ({alerts.filter((a) => a.status === 'new').length})
+            </button>
+          </div>
+
+          {/* Gesture Target Selector */}
+          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded p-0.5 text-xs font-hud">
+            <span className="text-[10px] text-slate-400 px-1 hidden md:inline">TARGET:</span>
+            <button
+              onClick={() => updateGestureState({ target: 'map' })}
+              className={`px-2 py-0.5 rounded transition-colors ${
+                gestureState.target === 'map'
+                  ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40 shadow-[0_0_8px_rgba(6,182,212,0.3)]'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Map
+            </button>
+            <button
+              onClick={() => updateGestureState({ target: 'video' })}
+              className={`px-2 py-0.5 rounded transition-colors ${
+                gestureState.target === 'video'
+                  ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40 shadow-[0_0_8px_rgba(6,182,212,0.3)]'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Video
             </button>
           </div>
 
@@ -500,10 +585,19 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
 
       {/* Gesture Active Target HUD Indicator */}
       {gestureState.isActive && gestureState.target === 'map' && (
-        <div className="absolute top-14 left-4 z-20 bg-[#070b14]/90 border border-cyan-400/60 rounded px-3 py-1.5 text-xs font-hud flex items-center gap-2 shadow-[0_0_15px_rgba(6,182,212,0.4)] animate-pulse">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-          <span className="text-cyan-300 font-bold">GESTURE MAP TARGET ACTIVE</span>
-          <span className="text-slate-400 text-[10px]">(Pinch: Zoom | Hand move: Pan)</span>
+        <div className="absolute top-14 left-4 z-20 bg-[#070b14]/95 border border-cyan-400/60 rounded-lg p-2.5 text-xs font-hud flex flex-col gap-1 shadow-[0_0_20px_rgba(6,182,212,0.4)]">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></span>
+            <span className="text-cyan-300 font-bold uppercase tracking-wide">GESTURE MAP TARGET ACTIVE</span>
+          </div>
+          <div className="text-slate-200 text-[11px] flex items-center gap-2">
+            <span>Coordinates: <strong className="text-white">{mapTelemetry.lat.toFixed(4)}, {mapTelemetry.lng.toFixed(4)}</strong></span>
+            <span className="text-slate-600">·</span>
+            <span>Zoom: <strong className="text-cyan-400">{mapTelemetry.zoom}x</strong></span>
+          </div>
+          <div className="text-slate-400 text-[10px]">
+            Pinch = Zoom In | Open Hand = Zoom Out | Hand Move = Pan
+          </div>
         </div>
       )}
 
@@ -511,14 +605,17 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
       <div ref={mapContainerRef} className={`w-full ${heightClass} z-0 outline-none`} />
 
       {/* Map Bottom Status Strip */}
-      <div className="p-2 bg-[#070b14] border-t border-slate-900 flex flex-wrap items-center justify-between text-[11px] font-hud text-slate-400 px-3 gap-2">
+      <div className="p-2.5 bg-[#070b14] border-t border-slate-900 flex flex-wrap items-center justify-between text-[11px] font-hud text-slate-400 px-3 gap-2">
         <div className="flex items-center gap-2">
-          <Navigation className="w-3 h-3 text-cyan-400" />
+          <Navigation className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
           <span className="truncate max-w-md">{locationStatus}</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-slate-400">Markers: <strong className="text-slate-200 font-normal">Sample Demo Coordinates</strong></span>
-          <span className="text-slate-400">Tile Provider: <strong className="text-cyan-400 font-normal">OpenStreetMap (Free)</strong></span>
+          <span className="text-slate-300">
+            Center: <strong className="text-cyan-400 font-semibold">{mapTelemetry.lat.toFixed(4)}, {mapTelemetry.lng.toFixed(4)}</strong> ({mapTelemetry.zoom}x)
+          </span>
+          <span className="text-slate-500">|</span>
+          <span className="text-slate-400">Tile Layer: <strong className="text-slate-200 font-normal">OpenStreetMap (Free)</strong></span>
         </div>
       </div>
     </div>

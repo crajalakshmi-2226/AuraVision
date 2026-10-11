@@ -64,6 +64,10 @@ interface AppContextType {
   setCameraError: (err: string | null) => void;
   isPreviewVisible: boolean;
   setIsPreviewVisible: (visible: boolean) => void;
+  mapTelemetry: { lat: number; lng: number; zoom: number };
+  setMapTelemetry: (telemetry: { lat: number; lng: number; zoom: number }) => void;
+  userLocation: { lat: number; lng: number; accuracy?: number } | null;
+  setUserLocation: (loc: { lat: number; lng: number; accuracy?: number } | null) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -94,6 +98,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
   const [isRTSPGuideOpen, setIsRTSPGuideOpen] = useState<boolean>(false);
 
+  // Map Telemetry state
+  const [mapTelemetry, setMapTelemetry] = useState<{ lat: number; lng: number; zoom: number }>({
+    lat: 37.775,
+    lng: -122.419,
+    zoom: 14,
+  });
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
+
   // Gesture State
   const [gestureState, setGestureState] = useState<GestureState>({
     isActive: false,
@@ -102,6 +114,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     currentGesture: 'none',
     confidence: 0,
     handDetected: false,
+    detectedHandCount: 0,
+    rawPinchDistance: 0,
+    rawExtensionScore: 0,
+    centroid: { x: 0.5, y: 0.5 },
+    trackingStatus: 'idle',
     lastAction: 'Waiting for gesture stream',
     lastActionTime: 0,
     sensitivity: 1.0,
@@ -546,6 +563,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCameraError,
         isPreviewVisible,
         setIsPreviewVisible,
+        mapTelemetry,
+        setMapTelemetry,
+        userLocation,
+        setUserLocation,
       }}
     >
       {children}
