@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-hud: 'JetBrains Mono', monospace;
+    --font-heading: 'Chakra Petch', sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #050811;
+    color: #e2e8f0;
+  }
+}
+
+.font-hud {
+  font-family: var(--font-hud);
+}
+
+.font-heading {
+  font-family: var(--font-heading);
+}
+
+/* Tactical Glassmorphism */
+.glass-panel {
+  background: rgba(11, 18, 33, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(56, 189, 248, 0.12);
+}
+
+.glass-panel-subtle {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.glass-panel-glow {
+  background: rgba(11, 18, 33, 0.85);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  box-shadow: 0 0 25px -5px rgba(99, 102, 241, 0.15);
+}
+
+/* Tactical Map Tile Filter for Dark Navy Aesthetic */
+.leaflet-dark-tiles .leaflet-tile-pane {
+  filter: brightness(0.65) invert(1) contrast(3) hue-rotate(200deg) saturate(0.35) brightness(0.7);
+}
+
+/* Custom Tactical Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #070b14;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Scanning line radar animation */
+@keyframes radar-scan {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-radar-scan {
+  animation: radar-scan 4s linear infinite;
+}
+
+/* Glowing pulse indicator */
+@keyframes glow-pulse {
+  0%, 100% {
+    opacity: 0.8;
+    filter: drop-shadow(0 0 8px rgba(6, 182, 212, 0.6));
+  }
+  50% {
+    opacity: 0.4;
+    filter: drop-shadow(0 0 2px rgba(6, 182, 212, 0.2));
+  }
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 2.5s ease-in-out infinite;
+}

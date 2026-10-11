@@ -1,0 +1,9 @@
+{
+  "name": "AuraVision AI",
+  "description": "See Beyond. Predict Risks. Protect Lives. Advanced surveillance, condition monitoring, gesture-controlled situational awareness, and safety intelligence platform.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
