@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
   ActiveNav,
   Alert,
   CameraDevice,
+  CameraStatus,
   ConditionId,
   GestureState,
   MonitoringCondition,
@@ -53,6 +54,16 @@ interface AppContextType {
   addNotification: (msg: string) => void;
   isRTSPGuideOpen: boolean;
   setIsRTSPGuideOpen: (open: boolean) => void;
+  webcamStream: MediaStream | null;
+  startWebcam: () => Promise<MediaStream | null>;
+  stopWebcam: () => void;
+  retryWebcam: () => Promise<void>;
+  cameraStatus: CameraStatus;
+  setCameraStatus: (status: CameraStatus) => void;
+  cameraError: string | null;
+  setCameraError: (err: string | null) => void;
+  isPreviewVisible: boolean;
+  setIsPreviewVisible: (visible: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -97,6 +108,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     debugLogs: ['Gesture engine standby. Click "Enable Gesture Control" to activate webcam.'],
   });
 
+  // Dedicated Webcam Stream State
+  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
+  const [cameraStatus, setCameraStatus] = useState<CameraStatus>('idle');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isPreviewVisible, setIsPreviewVisible] = useState<boolean>(true);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+
+  const addNotification = useCallback((msg: string) => {
+    setNotifications((prev) => [msg, ...prev.slice(0, 19)]);
+  }, []);
+
+  // Stop media stream tracks cleanly
+  const stopWebcam = useCallback(() => {
+    if (webcamStreamRef.current) {
+      webcamStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (e) {}
+      });
+      webcamStreamRef.current = null;
+    }
+    setWebcamStream(null);
+    setCameraStatus('idle');
+    setGestureState((prev) => ({
+      ...prev,
+      isActive: false,
+      isCameraActive: false,
+      currentGesture: 'none',
+      handDetected: false,
+      confidence: 0,
+      lastAction: 'Gesture tracking deactivated',
+    }));
+    addNotification('Webcam stopped and gesture tracking disabled');
+  }, [addNotification]);
+
+  // Start media stream with optimal constraints
+  const startWebcam = useCallback(async (): Promise<MediaStream | null> => {
+    // Stop existing media tracks before restarting the camera to avoid duplicate streams
+    if (webcamStreamRef.current) {
+      webcamStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (e) {}
+      });
+      webcamStreamRef.current = null;
+    }
+    setWebcamStream(null);
+    setCameraError(null);
+    setCameraStatus('permission_requested');
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('MediaDevices API is not supported in this browser environment.');
+      }
+
+      const constraints: MediaStreamConstraints = {
+        video: {
+          width: { ideal: 640, min: 320 },
+          height: { ideal: 480, min: 240 },
+          facingMode: 'user',
+          frameRate: { ideal: 30, max: 60 },
+        },
+        audio: false,
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      webcamStreamRef.current = stream;
+      setWebcamStream(stream);
+      setCameraStatus('loading');
+      setGestureState((prev) => ({
+        ...prev,
+        isActive: true,
+        isCameraActive: true,
+        lastAction: 'Camera connected, initializing frame loop...',
+      }));
+      addNotification('Camera connected. Webcam stream active.');
+      return stream;
+    } catch (err: any) {
+      console.error('Camera access failed:', err);
+      let errMsg = 'Failed to access webcam.';
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        errMsg = 'Webcam permission was declined. Please allow camera access in browser site settings.';
+      } else if (err.name === 'NotFoundError') {
+        errMsg = 'No webcam hardware device detected on this system.';
+      } else if (err.name === 'NotReadableError') {
+        errMsg = 'Webcam is currently in use by another application or tab.';
+      } else {
+        errMsg = err.message || 'Webcam initialization failed.';
+      }
+
+      setCameraError(errMsg);
+      setCameraStatus('error');
+      setGestureState((prev) => ({
+        ...prev,
+        isActive: false,
+        isCameraActive: false,
+        debugLogs: [`[Camera Error] ${errMsg}`, ...prev.debugLogs],
+      }));
+      addNotification(errMsg);
+      return null;
+    }
+  }, [addNotification]);
+
+  const retryWebcam = useCallback(async () => {
+    stopWebcam();
+    await new Promise((res) => setTimeout(res, 120));
+    await startWebcam();
+  }, [stopWebcam, startWebcam]);
+
+  // Clean up tracks on unmount
+  useEffect(() => {
+    return () => {
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch (e) {}
+        });
+      }
+    };
+  }, []);
+
   // Video inner viewport transform (isolated strictly to video contents)
   const [videoTransform, setVideoTransform] = useState<VideoViewportTransform>({
     zoom: 1.0,
@@ -139,10 +272,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('LocalStorage save failed', e);
     }
   }, [alerts]);
-
-  const addNotification = useCallback((msg: string) => {
-    setNotifications((prev) => [msg, ...prev.slice(0, 19)]);
-  }, []);
 
   const updateCondition = useCallback((id: ConditionId, updates: Partial<MonitoringCondition>) => {
     setConditions((prev) =>
@@ -407,6 +536,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addNotification,
         isRTSPGuideOpen,
         setIsRTSPGuideOpen,
+        webcamStream,
+        startWebcam,
+        stopWebcam,
+        retryWebcam,
+        cameraStatus,
+        setCameraStatus,
+        cameraError,
+        setCameraError,
+        isPreviewVisible,
+        setIsPreviewVisible,
       }}
     >
       {children}

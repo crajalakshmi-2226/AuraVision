@@ -27,6 +27,7 @@ export const Header: React.FC = () => {
     notifications,
     setIsRTSPGuideOpen,
     setActiveNav,
+    stopWebcam,
   } = useApp();
 
   const [showNotifications, setShowNotifications] = useState(false);
@@ -129,7 +130,7 @@ export const Header: React.FC = () => {
           <button
             onClick={() => {
               if (gestureState.isActive) {
-                updateGestureState({ isActive: false });
+                stopWebcam();
               } else {
                 setActiveNav('gestures');
               }

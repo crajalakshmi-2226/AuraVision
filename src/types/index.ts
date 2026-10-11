@@ -91,6 +91,15 @@ export type GestureType =
 
 export type GestureTarget = 'map' | 'video';
 
+export type CameraStatus =
+  | 'idle'
+  | 'permission_requested'
+  | 'loading'
+  | 'connected'
+  | 'hand_detected'
+  | 'searching'
+  | 'error';
+
 export interface GestureState {
   isActive: boolean;
   isCameraActive: boolean;

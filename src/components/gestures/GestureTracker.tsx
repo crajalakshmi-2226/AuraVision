@@ -3,14 +3,17 @@ import {
   AlertCircle,
   Camera,
   CheckCircle2,
+  Eye,
+  EyeOff,
   Hand,
   Maximize2,
   Minimize2,
   Move,
   RefreshCw,
+  RotateCcw,
+  Sparkles,
   Video,
   VideoOff,
-  Volume2,
   ZoomIn,
   ZoomOut,
   Info,
@@ -26,37 +29,45 @@ declare global {
 }
 
 export const GestureTracker: React.FC = () => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const mediaPipeInstanceRef = useRef<any>(null);
 
   const {
     gestureState,
     updateGestureState,
     videoTransform,
     updateVideoTransform,
-    resetVideoTransform,
     triggerMapAction,
     addNotification,
+    webcamStream,
+    startWebcam,
+    stopWebcam,
+    retryWebcam,
+    cameraStatus,
+    setCameraStatus,
+    cameraError,
+    isPreviewVisible,
+    setIsPreviewVisible,
   } = useApp();
 
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [isInitializing, setIsInitializing] = useState<boolean>(false);
+  const [isVideoReady, setIsVideoReady] = useState<boolean>(false);
   const [engineType, setEngineType] = useState<'MediaPipe Hands' | 'Optical Landmark Engine'>('Optical Landmark Engine');
+  const [modelLoading, setModelLoading] = useState<boolean>(false);
 
   // Tracking heuristics and smoothing state
   const prevCentroidRef = useRef<{ x: number; y: number } | null>(null);
   const lastGestureTimeRef = useRef<number>(0);
-  const smoothedDeltasRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
 
-  // Cooldown threshold (ms) between discrete zoom actions to prevent feedback loops
+  // Cooldown thresholds (ms) between discrete gesture actions to prevent feedback loops
   const ZOOM_COOLDOWN_MS = 380;
   const PAN_COOLDOWN_MS = 140;
 
   // Process detected gesture action onto selected target (Video OR Map)
   const dispatchGestureAction = useCallback(
-    (gesture: GestureType, confidence: number, rawDx = 0, rawDy = 0) => {
+    (gesture: GestureType, confidence: number) => {
       const now = Date.now();
       const target = gestureState.target;
 
@@ -125,10 +136,17 @@ export const GestureTracker: React.FC = () => {
       }
 
       // Update gesture telemetry
+      const isDetected = gesture !== 'none';
+      if (isDetected) {
+        setCameraStatus('hand_detected');
+      } else if (webcamStream) {
+        setCameraStatus('searching');
+      }
+
       updateGestureState({
         currentGesture: gesture,
         confidence: Math.round(confidence * 100),
-        handDetected: gesture !== 'none',
+        handDetected: isDetected,
         lastAction: actionDesc !== 'Idle' ? actionDesc : gestureState.lastAction,
         lastActionTime: actionDesc !== 'Idle' ? now : gestureState.lastActionTime,
         debugLogs: actionDesc !== 'Idle'
@@ -139,117 +157,114 @@ export const GestureTracker: React.FC = () => {
           : gestureState.debugLogs,
       });
     },
-    [gestureState.target, gestureState.lastAction, gestureState.lastActionTime, gestureState.debugLogs, updateGestureState, updateVideoTransform, triggerMapAction]
+    [
+      gestureState.target,
+      gestureState.lastAction,
+      gestureState.lastActionTime,
+      gestureState.debugLogs,
+      webcamStream,
+      setCameraStatus,
+      updateGestureState,
+      updateVideoTransform,
+      triggerMapAction,
+    ]
   );
 
-  // Initialize Camera Stream
-  const startCamera = async () => {
-    setIsInitializing(true);
-    setCameraError(null);
+  // Attach webcam stream to HTML <video> element with callback ref & effect
+  const attachStreamToVideo = useCallback((videoElement: HTMLVideoElement | null, stream: MediaStream | null) => {
+    if (!videoElement) return;
 
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('MediaDevices API is not supported in this browser environment.');
+    if (stream) {
+      if (videoElement.srcObject !== stream) {
+        videoElement.srcObject = stream;
       }
+      videoElement.muted = true;
+      videoElement.defaultMuted = true;
+      videoElement.playsInline = true;
+      videoElement.autoplay = true;
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 320 },
-          height: { ideal: 240 },
-          facingMode: 'user',
-        },
-        audio: false,
-      });
+      const attemptPlay = async () => {
+        try {
+          await videoElement.play();
+          setIsVideoReady(true);
+          setCameraStatus('connected');
+        } catch (err: any) {
+          if (err.name !== 'AbortError') {
+            console.warn('Video element play() delayed or error:', err);
+          }
+        }
+      };
 
-      streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play().catch(() => {});
+      if (videoElement.readyState >= 1) {
+        attemptPlay();
+      } else {
+        videoElement.onloadedmetadata = () => {
+          attemptPlay();
         };
       }
-
-      updateGestureState({
-        isActive: true,
-        isCameraActive: true,
-      });
-      addNotification('Webcam gesture controller initialized successfully');
-      setIsInitializing(false);
-    } catch (err: any) {
-      console.error('Camera access failed:', err);
-      let errMsg = 'Failed to access webcam.';
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        errMsg = 'Webcam permission was declined. Click lock icon in browser URL bar to grant permission.';
-      } else if (err.name === 'NotFoundError') {
-        errMsg = 'No webcam hardware device detected on this system.';
-      } else {
-        errMsg = err.message || 'Webcam initialization failed.';
-      }
-
-      setCameraError(errMsg);
-      setIsInitializing(false);
-      updateGestureState({
-        isActive: false,
-        isCameraActive: false,
-        debugLogs: [`[Error] ${errMsg}`, ...gestureState.debugLogs],
-      });
-      addNotification(errMsg);
+    } else {
+      videoElement.srcObject = null;
+      setIsVideoReady(false);
     }
-  };
+  }, [setCameraStatus]);
 
-  // Stop Camera Stream
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+  // Video Ref Callback guarantees stream is attached immediately upon DOM element mounting
+  const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
+    videoRef.current = element;
+    if (element && webcamStream) {
+      attachStreamToVideo(element, webcamStream);
     }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = null;
-    }
+  }, [webcamStream, attachStreamToVideo]);
 
-    updateGestureState({
-      isActive: false,
-      isCameraActive: false,
-      currentGesture: 'none',
-      handDetected: false,
-      confidence: 0,
-      lastAction: 'Gesture tracking deactivated',
-    });
-    addNotification('Gesture control tracking disabled');
-  };
-
-  // Run Real-Time Frame Tracking Engine
+  // Synchronize effect whenever webcamStream changes
   useEffect(() => {
-    if (!gestureState.isActive || !gestureState.isCameraActive) return;
+    if (videoRef.current) {
+      attachStreamToVideo(videoRef.current, webcamStream);
+    }
+  }, [webcamStream, attachStreamToVideo]);
 
-    let mediaPipeInstance: any = null;
+  // Initialize and run Hand-Landmark Tracking Engine (MediaPipe + Optical Fallback)
+  useEffect(() => {
+    if (!webcamStream || !isVideoReady || !gestureState.isActive) {
+      return;
+    }
 
-    // Check if MediaPipe Hands is loaded in window
-    if (window.Hands) {
+    let isDisposed = false;
+
+    // Check if MediaPipe is available in global window
+    if (window.Hands && !mediaPipeInstanceRef.current) {
       try {
-        setEngineType('MediaPipe Hands');
-        mediaPipeInstance = new window.Hands({
+        setModelLoading(true);
+        const hands = new window.Hands({
           locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
         });
 
-        mediaPipeInstance.setOptions({
+        hands.setOptions({
           maxNumHands: 1,
           modelComplexity: 1,
           minDetectionConfidence: 0.5,
           minTrackingConfidence: 0.5,
         });
 
-        mediaPipeInstance.onResults((results: any) => {
+        hands.onResults((results: any) => {
+          if (isDisposed) return;
+          setModelLoading(false);
+          setEngineType('MediaPipe Hands');
+
           const canvas = canvasRef.current;
           if (!canvas) return;
           const ctx = canvas.getContext('2d');
           if (!ctx) return;
 
+          // Always match canvas internal dimensions with actual video resolution for crisp 1:1 overlay
+          if (videoRef.current && videoRef.current.videoWidth > 0) {
+            if (canvas.width !== videoRef.current.videoWidth || canvas.height !== videoRef.current.videoHeight) {
+              canvas.width = videoRef.current.videoWidth;
+              canvas.height = videoRef.current.videoHeight;
+            }
+          }
+
+          // Clear transparent HUD canvas completely so camera video feed is 100% visible
           ctx.clearRect(0, 0, canvas.width, canvas.height);
 
           if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
@@ -260,20 +275,20 @@ export const GestureTracker: React.FC = () => {
 
           const landmarks = results.multiHandLandmarks[0];
 
-          // Draw skeleton & landmarks on canvas HUD
+          // Draw skeleton joints on transparent HUD canvas
           ctx.strokeStyle = '#22d3ee';
           ctx.fillStyle = '#a855f7';
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = 2.5;
 
           landmarks.forEach((pt: any) => {
             const x = (1 - pt.x) * canvas.width; // Mirror horizontally
             const y = pt.y * canvas.height;
             ctx.beginPath();
-            ctx.arc(x, y, 3, 0, Math.PI * 2);
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
             ctx.fill();
           });
 
-          // Connect key bones
+          // Connect key finger bones
           const connections = [
             [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
             [0, 5], [5, 6], [6, 7], [7, 8], // Index
@@ -297,7 +312,7 @@ export const GestureTracker: React.FC = () => {
           const indexTip = landmarks[8];
           const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
 
-          // Calculate Hand Extension / Spread (distance of tips from wrist 0)
+          // Calculate Hand Extension / Spread (average distance of tips from wrist 0)
           const wrist = landmarks[0];
           const middleTip = landmarks[12];
           const ringTip = landmarks[16];
@@ -318,12 +333,12 @@ export const GestureTracker: React.FC = () => {
           };
 
           let detectedGesture: GestureType = 'none';
-          let confidence = 0.85;
+          let confidence = 0.88;
 
           // 1. Check Pinch (Zoom IN)
           if (pinchDist < 0.075) {
             detectedGesture = 'pinch_zoom_in';
-            confidence = Math.max(0.7, 1 - pinchDist * 10);
+            confidence = Math.max(0.75, 1 - pinchDist * 10);
           }
           // 2. Check Open / Spread Hand (Zoom OUT)
           else if (avgExtension > 0.44 && pinchDist > 0.18) {
@@ -335,128 +350,199 @@ export const GestureTracker: React.FC = () => {
             const dx = currentCentroid.x - prevCentroidRef.current.x;
             const dy = currentCentroid.y - prevCentroidRef.current.y;
 
-            // Dead-zone threshold
-            const THRESHOLD = 0.04;
-            if (Math.abs(dx) > THRESHOLD || Math.abs(dy) > THRESHOLD) {
+            const DEADZONE = 0.04;
+            if (Math.abs(dx) > DEADZONE || Math.abs(dy) > DEADZONE) {
               if (Math.abs(dx) > Math.abs(dy)) {
                 detectedGesture = dx > 0 ? 'pan_right' : 'pan_left';
               } else {
                 detectedGesture = dy > 0 ? 'pan_down' : 'pan_up';
               }
-              confidence = 0.88;
+              confidence = 0.9;
             }
           }
 
           prevCentroidRef.current = currentCentroid;
           dispatchGestureAction(detectedGesture, confidence);
         });
-      } catch (e) {
-        console.warn('MediaPipe initialization fallback to optical vision engine', e);
+
+        mediaPipeInstanceRef.current = hands;
+      } catch (err) {
+        console.warn('MediaPipe Hands setup error, using optical fallback:', err);
+        setModelLoading(false);
       }
     }
 
     // Continuous Frame Loop
-    const processVideoLoop = async () => {
-      if (!videoRef.current || videoRef.current.readyState < 2) {
-        animFrameRef.current = requestAnimationFrame(processVideoLoop);
+    const processFrame = async () => {
+      if (isDisposed) return;
+
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || video.paused) {
+        animFrameRef.current = requestAnimationFrame(processFrame);
         return;
       }
 
-      if (mediaPipeInstance) {
+      if (mediaPipeInstanceRef.current) {
         try {
-          await mediaPipeInstance.send({ image: videoRef.current });
+          await mediaPipeInstanceRef.current.send({ image: video });
         } catch (e) {
-          // Silently recover if frame was busy
+          // Frame busy, silently continue
         }
       } else {
-        // Fallback Optical Difference & Skin Luma Tracker
+        // Optical Landmark & Motion Engine Fallback
         setEngineType('Optical Landmark Engine');
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const ctx = canvas.getContext('2d', { willReadFrequently: true });
-          if (ctx) {
-            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const d = imgData.data;
 
-            let totalSkinPixels = 0;
-            let sumX = 0;
-            let sumY = 0;
+        // Use offscreen in-memory canvas for pixel sampling (keeps user canvas completely transparent!)
+        if (!offscreenCanvasRef.current) {
+          offscreenCanvasRef.current = document.createElement('canvas');
+        }
+        const offscreen = offscreenCanvasRef.current;
+        offscreen.width = 160;
+        offscreen.height = 120;
+        const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
 
-            // Skin color heuristic in RGB (YCrCb approx)
-            for (let i = 0; i < d.length; i += 16) {
-              const r = d[i];
-              const g = d[i + 1];
-              const b = d[i + 2];
-              if (r > 95 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15) {
-                const pixelIdx = i / 4;
-                const px = pixelIdx % canvas.width;
-                const py = Math.floor(pixelIdx / canvas.width);
-                sumX += px;
-                sumY += py;
-                totalSkinPixels++;
-              }
+        const hudCanvas = canvasRef.current;
+        const hudCtx = hudCanvas?.getContext('2d');
+
+        if (offCtx && hudCanvas && hudCtx) {
+          offCtx.drawImage(video, 0, 0, 160, 120);
+          const imgData = offCtx.getImageData(0, 0, 160, 120);
+          const d = imgData.data;
+
+          let totalSkinPixels = 0;
+          let sumX = 0;
+          let sumY = 0;
+
+          for (let i = 0; i < d.length; i += 16) {
+            const r = d[i];
+            const g = d[i + 1];
+            const b = d[i + 2];
+            if (r > 95 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15) {
+              const pixelIdx = i / 4;
+              const px = pixelIdx % 160;
+              const py = Math.floor(pixelIdx / 160);
+              sumX += px;
+              sumY += py;
+              totalSkinPixels++;
             }
+          }
 
-            // Draw HUD indicator
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          // Clear HUD canvas
+          hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
 
-            if (totalSkinPixels > 250) {
-              const avgX = canvas.width - sumX / totalSkinPixels; // mirrored
-              const avgY = sumY / totalSkinPixels;
+          if (totalSkinPixels > 150) {
+            const normX = 1 - (sumX / totalSkinPixels) / 160; // Mirrored
+            const normY = (sumY / totalSkinPixels) / 120;
+            const targetX = normX * hudCanvas.width;
+            const targetY = normY * hudCanvas.height;
 
-              ctx.strokeStyle = '#22d3ee';
-              ctx.lineWidth = 2;
-              ctx.beginPath();
-              ctx.arc(avgX, avgY, 20, 0, Math.PI * 2);
-              ctx.stroke();
+            // Draw glowing optical reticle over the detected hand on HUD
+            hudCtx.strokeStyle = '#22d3ee';
+            hudCtx.lineWidth = 2.5;
+            hudCtx.beginPath();
+            hudCtx.arc(targetX, targetY, 22, 0, Math.PI * 2);
+            hudCtx.stroke();
 
-              const currentCentroid = {
-                x: avgX / canvas.width,
-                y: avgY / canvas.height,
-              };
+            hudCtx.fillStyle = '#a855f7';
+            hudCtx.beginPath();
+            hudCtx.arc(targetX, targetY, 4, 0, Math.PI * 2);
+            hudCtx.fill();
 
-              let detectedGesture: GestureType = 'none';
-              let conf = 0.82;
+            const currentCentroid = { x: normX, y: normY };
+            let detectedGesture: GestureType = 'none';
+            let conf = 0.85;
 
-              if (prevCentroidRef.current) {
-                const dx = currentCentroid.x - prevCentroidRef.current.x;
-                const dy = currentCentroid.y - prevCentroidRef.current.y;
-                const DEADZONE = 0.05;
+            if (prevCentroidRef.current) {
+              const dx = currentCentroid.x - prevCentroidRef.current.x;
+              const dy = currentCentroid.y - prevCentroidRef.current.y;
+              const DEADZONE = 0.05;
 
-                if (Math.abs(dx) > DEADZONE || Math.abs(dy) > DEADZONE) {
-                  if (Math.abs(dx) > Math.abs(dy)) {
-                    detectedGesture = dx > 0 ? 'pan_right' : 'pan_left';
-                  } else {
-                    detectedGesture = dy > 0 ? 'pan_down' : 'pan_up';
-                  }
+              if (Math.abs(dx) > DEADZONE || Math.abs(dy) > DEADZONE) {
+                if (Math.abs(dx) > Math.abs(dy)) {
+                  detectedGesture = dx > 0 ? 'pan_right' : 'pan_left';
+                } else {
+                  detectedGesture = dy > 0 ? 'pan_down' : 'pan_up';
                 }
               }
-
-              prevCentroidRef.current = currentCentroid;
-              dispatchGestureAction(detectedGesture, conf);
-            } else {
-              prevCentroidRef.current = null;
-              dispatchGestureAction('none', 0);
             }
+
+            prevCentroidRef.current = currentCentroid;
+            dispatchGestureAction(detectedGesture, conf);
+          } else {
+            prevCentroidRef.current = null;
+            dispatchGestureAction('none', 0);
           }
         }
       }
 
-      animFrameRef.current = requestAnimationFrame(processVideoLoop);
+      animFrameRef.current = requestAnimationFrame(processFrame);
     };
 
-    animFrameRef.current = requestAnimationFrame(processVideoLoop);
+    animFrameRef.current = requestAnimationFrame(processFrame);
 
     return () => {
+      isDisposed = true;
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
-      }
-      if (mediaPipeInstance && mediaPipeInstance.close) {
-        mediaPipeInstance.close();
+        animFrameRef.current = null;
       }
     };
-  }, [gestureState.isActive, gestureState.isCameraActive, dispatchGestureAction]);
+  }, [webcamStream, isVideoReady, gestureState.isActive, dispatchGestureAction]);
+
+  // Clean up mediaPipe instance on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaPipeInstanceRef.current && mediaPipeInstanceRef.current.close) {
+        mediaPipeInstanceRef.current.close();
+        mediaPipeInstanceRef.current = null;
+      }
+    };
+  }, []);
+
+  // Format Status Message for UI Header
+  const getStatusBadge = () => {
+    switch (cameraStatus) {
+      case 'permission_requested':
+        return {
+          text: 'Camera permission requested · Check browser prompt',
+          color: 'bg-amber-950/80 text-amber-300 border-amber-600/40',
+          dot: 'bg-amber-400 animate-ping',
+        };
+      case 'loading':
+        return {
+          text: 'Video stream loading · Initializing feed...',
+          color: 'bg-cyan-950/80 text-cyan-300 border-cyan-600/40',
+          dot: 'bg-cyan-400 animate-pulse',
+        };
+      case 'hand_detected':
+        return {
+          text: `Hand detected (${gestureState.confidence}%) · Gesture active`,
+          color: 'bg-emerald-950/80 text-emerald-300 border-emerald-600/40',
+          dot: 'bg-emerald-400 animate-ping',
+        };
+      case 'searching':
+      case 'connected':
+        return {
+          text: 'Webcam connected · Hold hand in frame to control',
+          color: 'bg-cyan-950/80 text-cyan-300 border-cyan-600/40',
+          dot: 'bg-cyan-400 animate-pulse',
+        };
+      case 'error':
+        return {
+          text: 'Camera error · Check connection or retry',
+          color: 'bg-rose-950/80 text-rose-300 border-rose-600/40',
+          dot: 'bg-rose-400',
+        };
+      default:
+        return {
+          text: 'Webcam standby · Click "Enable Gesture Control"',
+          color: 'bg-slate-900 text-slate-400 border-slate-800',
+          dot: 'bg-slate-500',
+        };
+    }
+  };
+
+  const statusBadge = getStatusBadge();
 
   return (
     <div className="w-full bg-[#070b14] border border-cyan-500/20 rounded-xl p-4 flex flex-col gap-4">
@@ -469,35 +555,47 @@ export const GestureTracker: React.FC = () => {
               Hand Gesture Control Studio
             </h3>
             <p className="text-xs text-slate-400">
-              Control map or surveillance video navigation without physical mouse contact
+              Touchless computer-vision situational control for maps and tactical video feeds
             </p>
           </div>
         </div>
 
-        {/* Enable / Disable Button */}
+        {/* Action Buttons: Enable / Disable + Retry */}
         <div className="flex items-center gap-2">
-          {gestureState.isActive ? (
-            <button
-              onClick={stopCamera}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700 transition-colors"
-            >
-              <VideoOff className="w-3.5 h-3.5 text-rose-400" />
-              <span>Disable Gesture Control</span>
-            </button>
+          {gestureState.isCameraActive ? (
+            <>
+              {/* Retry Camera Button (Requirement 11) */}
+              <button
+                onClick={retryWebcam}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 transition-colors"
+                title="Restart and reinitialize webcam stream"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Retry Camera</span>
+              </button>
+
+              {/* Disable Camera Button */}
+              <button
+                onClick={stopWebcam}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700 transition-colors"
+              >
+                <VideoOff className="w-3.5 h-3.5 text-rose-400" />
+                <span>Disable Gesture Control</span>
+              </button>
+            </>
           ) : (
             <button
-              onClick={startCamera}
-              disabled={isInitializing}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-slate-950 transition-colors shadow-[0_0_15px_rgba(6,182,212,0.3)]"
+              onClick={startWebcam}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-slate-950 transition-colors shadow-[0_0_15px_rgba(6,182,212,0.3)]"
             >
               <Camera className="w-3.5 h-3.5" />
-              <span>{isInitializing ? 'Requesting Permission...' : 'Enable Gesture Control'}</span>
+              <span>Enable Gesture Control</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Target Selector Bar (Map vs Video) */}
+      {/* Target Selector & Status Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 p-3 rounded-lg border border-slate-800">
         <div className="flex items-center gap-2">
           <span className="text-xs font-hud text-slate-300 font-medium">GESTURE TARGET:</span>
@@ -525,77 +623,160 @@ export const GestureTracker: React.FC = () => {
           </div>
         </div>
 
-        <div className="text-[11px] font-hud text-slate-400 flex items-center gap-2">
-          <span>Engine: <strong className="text-slate-200">{engineType}</strong></span>
-          <span className="text-slate-600">|</span>
-          <span>Permission: <strong className={gestureState.isCameraActive ? 'text-emerald-400' : 'text-slate-400'}>{gestureState.isCameraActive ? 'Granted' : 'Standby'}</strong></span>
+        {/* Informative Status Badge (Requirement 10) */}
+        <div className={`px-2.5 py-1 rounded text-xs font-hud border flex items-center gap-2 ${statusBadge.color}`}>
+          <span className={`w-2 h-2 rounded-full ${statusBadge.dot}`}></span>
+          <span>{statusBadge.text}</span>
         </div>
       </div>
 
-      {/* Error Notice */}
+      {/* Camera Error Alert (Requirement 10) */}
       {cameraError && (
-        <div className="p-3 rounded-lg bg-rose-950/80 border border-rose-800 text-xs text-rose-200 flex items-start gap-2.5">
-          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <div className="font-semibold text-rose-100">Camera Access Notice:</div>
-            <div>{cameraError}</div>
-            <div className="text-[11px] text-rose-300 mt-1">
-              Manual map and video navigation controls remain 100% functional.
+        <div className="p-3.5 rounded-lg bg-rose-950/80 border border-rose-800 text-xs text-rose-200 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-semibold text-rose-100">Camera Access Error:</div>
+              <div>{cameraError}</div>
+              <div className="text-[11px] text-rose-300 mt-1">
+                Tip: Click "Retry Camera" or verify your browser permissions in the URL address bar.
+              </div>
             </div>
           </div>
+          <button
+            onClick={retryWebcam}
+            className="px-3 py-1.5 rounded bg-rose-900 hover:bg-rose-800 text-xs text-white shrink-0 font-medium"
+          >
+            Retry Now
+          </button>
         </div>
       )}
 
-      {/* Main Studio Grid: Left Webcam Preview + Right Realtime Gesture Cards */}
+      {/* Main Studio Grid: Left Live Webcam Preview + Right Realtime Gesture Cards */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
         {/* Left Column: Live Webcam Viewport & Landmark Canvas */}
         <div className="md:col-span-5 flex flex-col gap-2">
-          <div className="relative w-full aspect-[4/3] bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center">
+          {/* Header over preview: Preview Toggle (Requirement 11) */}
+          <div className="flex items-center justify-between text-xs font-hud text-slate-400 px-1">
+            <span className="flex items-center gap-1.5">
+              <Camera className="w-3.5 h-3.5 text-cyan-400" />
+              <span>LIVE WEBCAM VIEWPORT</span>
+            </span>
+
+            {gestureState.isCameraActive && (
+              <button
+                onClick={() => setIsPreviewVisible(!isPreviewVisible)}
+                className="flex items-center gap-1 text-[11px] text-slate-300 hover:text-cyan-300 transition-colors"
+                title={isPreviewVisible ? 'Hide camera preview' : 'Show camera preview'}
+              >
+                {isPreviewVisible ? (
+                  <>
+                    <EyeOff className="w-3.5 h-3.5" />
+                    <span>Hide Preview</span>
+                  </>
+                ) : (
+                  <>
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Show Preview</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+
+          {/* PREVIEW CONTAINER: Fixed visible dimensions, non-zero width/height, object-fit: cover (Requirement 5 & 6) */}
+          <div className="relative w-full aspect-[4/3] min-h-[260px] bg-slate-900 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center select-none shadow-inner">
             {gestureState.isCameraActive ? (
               <>
+                {/* HTML <video> element: ALWAYS rendered with proper classes, object-fit: cover, and mirrored transform */}
                 <video
-                  ref={videoRef}
+                  ref={setVideoRef}
                   autoPlay
                   playsInline
                   muted
-                  className="w-full h-full object-cover -scale-x-100"
+                  className={`absolute inset-0 w-full h-full object-cover transform -scale-x-100 z-0 transition-opacity duration-200 ${
+                    isPreviewVisible ? 'opacity-100' : 'opacity-0'
+                  }`}
                 />
+
+                {/* Transparent HUD Canvas Overlay: Cleared every frame, never renders opaque black (Requirement 8) */}
                 <canvas
                   ref={canvasRef}
-                  width={320}
-                  height={240}
-                  className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                  width={640}
+                  height={480}
+                  className={`absolute inset-0 w-full h-full object-cover pointer-events-none z-10 ${
+                    isPreviewVisible ? 'opacity-100' : 'opacity-0'
+                  }`}
                 />
 
-                {/* Tracking Badge */}
-                <div className="absolute top-2 left-2 bg-slate-950/80 backdrop-blur-md px-2 py-1 rounded border border-slate-700 text-[10px] font-hud flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${gestureState.handDetected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-                  <span className="text-slate-200">{gestureState.handDetected ? 'HAND DETECTED' : 'SEARCHING FOR HAND'}</span>
-                </div>
+                {/* If preview hidden by user toggle */}
+                {!isPreviewVisible && (
+                  <div className="absolute inset-0 bg-slate-950 flex flex-col items-center justify-center p-4 text-center z-20">
+                    <EyeOff className="w-8 h-8 text-slate-600 mb-2" />
+                    <p className="text-xs text-slate-300 font-medium">Camera Preview Hidden</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Hand gesture tracking continues active in the background.
+                    </p>
+                    <button
+                      onClick={() => setIsPreviewVisible(true)}
+                      className="mt-3 px-3 py-1 rounded bg-slate-800 text-cyan-300 text-xs font-hud hover:bg-slate-700"
+                    >
+                      Restore Preview
+                    </button>
+                  </div>
+                )}
 
-                {/* Current Gesture HUD */}
-                <div className="absolute bottom-2 left-2 right-2 bg-slate-950/90 backdrop-blur-md p-1.5 rounded border border-cyan-500/30 text-xs font-hud flex items-center justify-between">
-                  <span className="text-slate-400">DETECTED:</span>
-                  <span className="text-cyan-300 font-bold uppercase truncate">
-                    {gestureState.currentGesture.replace(/_/g, ' ')}
-                  </span>
-                  <span className="text-emerald-400 text-[10px]">{gestureState.confidence}%</span>
-                </div>
+                {/* Loading State Overlay while model prepares */}
+                {modelLoading && (
+                  <div className="absolute top-2 left-2 z-20 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded border border-cyan-500/40 text-[10px] font-hud text-cyan-300 flex items-center gap-1.5 animate-pulse">
+                    <Sparkles className="w-3 h-3 text-cyan-400" />
+                    <span>Initializing Hand Model...</span>
+                  </div>
+                )}
+
+                {/* Active Tracking Badge (Top-Left) */}
+                {isPreviewVisible && !modelLoading && (
+                  <div className="absolute top-2 left-2 z-20 bg-slate-950/85 backdrop-blur-md px-2.5 py-1 rounded border border-slate-700 text-[10px] font-hud flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${gestureState.handDetected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                    <span className="text-slate-200">
+                      {gestureState.handDetected ? 'HAND DETECTED' : 'SEARCHING FOR HAND'}
+                    </span>
+                  </div>
+                )}
+
+                {/* Current Gesture HUD Badge (Bottom) */}
+                {isPreviewVisible && (
+                  <div className="absolute bottom-2 left-2 right-2 z-20 bg-slate-950/90 backdrop-blur-md p-2 rounded border border-cyan-500/30 text-xs font-hud flex items-center justify-between">
+                    <span className="text-slate-400">DETECTED:</span>
+                    <span className="text-cyan-300 font-bold uppercase truncate px-1">
+                      {gestureState.currentGesture.replace(/_/g, ' ')}
+                    </span>
+                    <span className="text-emerald-400 text-[11px] font-bold">
+                      {gestureState.confidence > 0 ? `${gestureState.confidence}%` : '0%'}
+                    </span>
+                  </div>
+                )}
               </>
             ) : (
               <div className="flex flex-col items-center justify-center p-6 text-center text-slate-500">
                 <Camera className="w-10 h-10 mb-2 text-slate-600" />
-                <p className="text-xs font-medium text-slate-400 mb-1">Webcam Inactive</p>
-                <p className="text-[11px] text-slate-500 max-w-[200px]">
-                  Click "Enable Gesture Control" above to start hand landmark tracking
+                <p className="text-xs font-medium text-slate-300 mb-1">Webcam Inactive</p>
+                <p className="text-[11px] text-slate-500 max-w-[220px] mb-3">
+                  Click "Enable Gesture Control" above to start live hand tracking.
                 </p>
+                <button
+                  onClick={startWebcam}
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-slate-950 transition-colors"
+                >
+                  Start Camera Feed
+                </button>
               </div>
             )}
           </div>
 
           <div className="text-[11px] text-slate-400 font-hud px-1 flex items-center justify-between">
             <span>Video feed strictly local (zero cloud upload)</span>
-            <span>Target: <span className="text-cyan-400 uppercase">{gestureState.target}</span></span>
+            <span>Target: <strong className="text-cyan-400 uppercase font-normal">{gestureState.target}</strong></span>
           </div>
         </div>
 
