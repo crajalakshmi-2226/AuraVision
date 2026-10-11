@@ -26,6 +26,7 @@ export const Header: React.FC = () => {
     alerts,
     notifications,
     setIsRTSPGuideOpen,
+    activeNav,
     setActiveNav,
     stopWebcam,
   } = useApp();
@@ -126,24 +127,18 @@ export const Header: React.FC = () => {
             <span className="hidden md:inline">Test Incident</span>
           </button>
 
-          {/* Quick Gesture Toggle */}
+          {/* Satellite & Gesture Pilot Quick Navigation */}
           <button
-            onClick={() => {
-              if (gestureState.isActive) {
-                stopWebcam();
-              } else {
-                setActiveNav('gestures');
-              }
-            }}
+            onClick={() => setActiveNav('pilot')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition-all ${
-              gestureState.isActive
-                ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.25)]'
-                : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-600'
+              activeNav === 'pilot'
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400 font-bold shadow-[0_0_12px_rgba(6,182,212,0.3)]'
+                : 'bg-slate-900 text-cyan-300 border-cyan-500/40 hover:bg-slate-850'
             }`}
-            title="Configure or toggle webcam hand gestures"
+            title="Open Full-Screen Live Face/Hand Camera + Interactive Satellite Map Split View"
           >
             <Hand className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="hidden lg:inline">{gestureState.isActive ? 'Gesture ON' : 'Gesture Mode'}</span>
+            <span className="hidden sm:inline">Satellite Pilot</span>
           </button>
 
           {/* Real NVR / RTSP Guide Button */}

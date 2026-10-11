@@ -123,6 +123,9 @@ export interface GestureState {
   currentGesture: GestureType;
   confidence: number;
   handDetected: boolean;
+  faceDetected: boolean;
+  faceConfidence?: number;
+  faceBoundingBox?: [number, number, number, number]; // [x, y, w, h] normalized 0..1
   detectedHandCount: number;
   rawPinchDistance: number;
   rawExtensionScore: number;
@@ -143,6 +146,7 @@ export interface VideoViewportTransform {
 export type ActiveNav =
   | 'dashboard'
   | 'map'
+  | 'pilot'
   | 'camera'
   | 'conditions'
   | 'condition-detail'

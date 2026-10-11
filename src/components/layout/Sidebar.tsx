@@ -5,6 +5,7 @@ import {
   Camera,
   Cpu,
   FileText,
+  Globe,
   Hand,
   History,
   LayoutDashboard,
@@ -38,6 +39,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
       id: 'dashboard',
       label: 'Main Dashboard',
       icon: LayoutDashboard,
+    },
+    {
+      id: 'pilot',
+      label: 'Satellite & Gesture Pilot',
+      icon: Globe,
+      badge: 'DUAL VIEW',
+      badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold',
     },
     {
       id: 'map',

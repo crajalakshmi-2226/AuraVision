@@ -11,8 +11,9 @@ import { AlertsCenterPage } from './pages/AlertsCenterPage';
 import { HardwareManagerPage } from './pages/HardwareManagerPage';
 import { GestureStudioPage } from './pages/GestureStudioPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
+import { SatelliteGesturePilotPage } from './pages/SatelliteGesturePilotPage';
 import { RtspGuideModal } from './pages/RtspGuideModal';
-import { Menu, MapPin, Compass, Shield } from 'lucide-react';
+import { Menu, MapPin, Compass, Shield, Globe } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
   const { activeNav, setActiveNav, setIsRTSPGuideOpen } = useApp();
@@ -48,6 +49,8 @@ const MainLayout: React.FC = () => {
           <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1600px] w-full mx-auto">
             {activeNav === 'dashboard' && <DashboardPage />}
 
+            {activeNav === 'pilot' && <SatelliteGesturePilotPage />}
+
             {activeNav === 'map' && (
               <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
@@ -61,10 +64,16 @@ const MainLayout: React.FC = () => {
                     </p>
                   </div>
                   <div className="flex items-center gap-2 text-xs font-hud">
-                    <span className="text-slate-400">TOUCHLESS GESTURE ADAPTER:</span>
+                    <button
+                      onClick={() => setActiveNav('pilot')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold transition-all shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      <span>Open Dual-Panel Satellite & Gesture Pilot</span>
+                    </button>
                     <button
                       onClick={() => setActiveNav('gestures')}
-                      className="px-2.5 py-1 rounded bg-cyan-950 border border-cyan-500/40 text-cyan-300 hover:underline"
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white"
                     >
                       Configure Gestures
                     </button>

@@ -114,6 +114,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     currentGesture: 'none',
     confidence: 0,
     handDetected: false,
+    faceDetected: false,
+    faceConfidence: 0,
     detectedHandCount: 0,
     rawPinchDistance: 0,
     rawExtensionScore: 0,
