@@ -13,6 +13,7 @@ import { GestureStudioPage } from './pages/GestureStudioPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
 import { SatelliteGesturePilotPage } from './pages/SatelliteGesturePilotPage';
 import { RtspGuideModal } from './pages/RtspGuideModal';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Menu, MapPin, Compass, Shield, Globe } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
@@ -83,7 +84,11 @@ const MainLayout: React.FC = () => {
               </div>
             )}
 
-            {activeNav === 'camera' && <CameraExplorerPage />}
+            {activeNav === 'camera' && (
+              <ErrorBoundary fallbackTitle="CCTV & Optical Feed Explorer Recovery">
+                <CameraExplorerPage />
+              </ErrorBoundary>
+            )}
 
             {activeNav === 'conditions' && <ConditionsExplorerPage />}
 

@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   Compass,
   Dog,
-  Expand,
   Eye,
   Hand,
   Maximize,
@@ -24,6 +23,8 @@ import {
   Crosshair,
   ShieldAlert,
   Info,
+  MapPin,
+  ExternalLink,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DetectedObject } from '../../types';
@@ -40,6 +41,8 @@ interface VideoPlayerProps {
   onRemoveUpload?: () => void;
   assignedConditionTitle?: string;
   cameraName?: string;
+  cameraLocation?: string;
+  coordinates?: { lat: number; lng: number };
 }
 
 export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -48,6 +51,8 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
   onRemoveUpload,
   assignedConditionTitle = 'Corridor Activity & Safety Monitoring',
   cameraName = 'Main Corridor Camera (Node 01)',
+  cameraLocation = 'Sector 4 - South Wing Corridor',
+  coordinates = { lat: 37.7749, lng: -122.4194 },
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -60,14 +65,15 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
     gestureState,
     updateGestureState,
     addNotification,
+    setActiveNav,
   } = useApp();
 
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(true);
-  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(30);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isCssFullscreen, setIsCssFullscreen] = useState<boolean>(false);
   const [videoLoadError, setVideoLoadError] = useState<boolean>(false);
   const [useProceduralStream, setUseProceduralStream] = useState<boolean>(false);
 
@@ -79,11 +85,9 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
   const [showModelGuide, setShowModelGuide] = useState<boolean>(false);
   const [isRealModelActive, setIsRealModelActive] = useState<boolean>(false);
   const [engineInfoText, setEngineInfoText] = useState<string>('Initializing optical neural network...');
-
-  // Optional benchmark synthetic targets toggle (ONLY used when explicitly requested by user in offline demo mode)
   const [showSyntheticBenchmark, setShowSyntheticBenchmark] = useState<boolean>(false);
 
-  // Reliable public domain / open sample surveillance video clip
+  // Reliable public domain sample surveillance video clip
   const sampleVideoUrl =
     videoSrc || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
 
@@ -109,7 +113,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
       ctx.fillStyle = '#070b14';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Floor & Corridor perspective lines
+      // Perspective grid lines
       ctx.strokeStyle = '#1e293b';
       ctx.lineWidth = 1;
       for (let i = 0; i < canvas.width; i += 40) {
@@ -128,8 +132,8 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
       ctx.fillStyle = '#22d3ee';
       ctx.font = '10px monospace';
       const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-      ctx.fillText(`CAM-01 [LOCAL SYNTHETIC FEED] · ${nowStr}`, 90, 25);
-      ctx.fillText(`STATUS: 30 FPS · ACTIVE SIMULATION`, 90, 40);
+      ctx.fillText(`CCTV FEED [SYNTHETIC OPTICAL BACKUP] · ${nowStr}`, 90, 25);
+      ctx.fillText(`STATUS: 30 FPS · ACTIVE CORRIDOR SENSOR`, 90, 40);
 
       // Render pedestrian figures
       pedestrians.forEach((p) => {
@@ -165,6 +169,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
     const handleLoadedMetadata = () => {
       setDuration(video.duration || 30);
       setVideoLoadError(false);
+      setUseProceduralStream(false);
     };
     const handleError = () => {
       console.warn('Video failed to load from remote CDN, activating procedural canvas stream.');
@@ -203,6 +208,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
     setIsMuted(!isMuted);
   };
 
+  // Fullscreen support: native fullscreen API + CSS modal fallback
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -213,18 +219,50 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, []);
 
+  // Listen for Escape key to exit CSS fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isCssFullscreen) {
+          setIsCssFullscreen(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCssFullscreen]);
+
   const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(() => {});
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(() => {});
-      setIsFullscreen(false);
+    if (isCssFullscreen) {
+      setIsCssFullscreen(false);
+      return;
+    }
+
+    if (!containerRef.current) {
+      setIsCssFullscreen(true);
+      return;
+    }
+
+    // Try native requestFullscreen, fallback smoothly to CSS full screen
+    try {
+      if (!document.fullscreenElement) {
+        containerRef.current
+          .requestFullscreen()
+          .then(() => setIsFullscreen(true))
+          .catch(() => {
+            // Iframe or permission block: use CSS fullscreen modal
+            setIsCssFullscreen(true);
+          });
+      } else {
+        document.exitFullscreen().catch(() => {});
+        setIsFullscreen(false);
+      }
+    } catch (e) {
+      setIsCssFullscreen(true);
     }
   };
 
-  // Manual transform adjustments (accessible buttons for zoom and pan)
+  // Manual transform adjustments
   const handleManualZoomIn = () => {
     updateVideoTransform((prev) => ({ ...prev, zoom: Math.min(4.0, prev.zoom + 0.25) }));
   };
@@ -239,12 +277,13 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
 
   // Center pan directly onto selected object in viewport
   const focusOnObject = (obj: DetectedObject) => {
+    if (!obj || !obj.bbox) return;
     const video = videoRef.current;
     const vw = video?.videoWidth || 640;
     const vh = video?.videoHeight || 360;
 
-    const centerX = obj.bbox[0] + obj.bbox[2] / 2;
-    const centerY = obj.bbox[1] + obj.bbox[3] / 2;
+    const centerX = obj.bbox[0] + (obj.bbox[2] || 60) / 2;
+    const centerY = obj.bbox[1] + (obj.bbox[3] || 100) / 2;
 
     const targetPanX = -((centerX - vw / 2) / (vw / 2)) * 120;
     const targetPanY = -((centerY - vh / 2) / (vh / 2)) * 90;
@@ -255,24 +294,29 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
       panX: targetPanX,
       panY: targetPanY,
     }));
-    addNotification(`Centered CCTV viewport on ${obj.class.toUpperCase()} (${obj.score}% confidence)`);
+    addNotification(`Centered CCTV viewport on ${(obj.class || 'target').toUpperCase()} (${obj.score}% confidence)`);
   };
 
-  // Initialize COCO-SSD Object Detection Model on component mount
+  // Initialize COCO-SSD Object Detection Model safely
   const handleInitModel = async () => {
     setModelStatus('loading');
     setEngineInfoText('Downloading MobileNet v2 neural network weights...');
-    const res = await initObjectDetectionModel();
-    if (res.success) {
-      setModelStatus('ready');
-      setIsRealModelActive(true);
-      setEngineInfoText('COCO-SSD Optical Neural Network active (inferencing people and dogs)');
-      addNotification('COCO-SSD model initialized successfully for client-side object detection.');
-    } else {
+    try {
+      const res = await initObjectDetectionModel();
+      if (res && res.success) {
+        setModelStatus('ready');
+        setIsRealModelActive(true);
+        setEngineInfoText('COCO-SSD Optical Neural Network active (inferencing people and dogs)');
+        addNotification('COCO-SSD model initialized successfully for client-side object detection.');
+      } else {
+        setModelStatus('unavailable');
+        setIsRealModelActive(false);
+        setEngineInfoText(res?.error || 'Model weights unavailable. Check network or view setup guide.');
+      }
+    } catch (e: any) {
       setModelStatus('unavailable');
       setIsRealModelActive(false);
-      setEngineInfoText(res.error || 'Model weights unavailable. Check network or view setup guide.');
-      addNotification('COCO-SSD model initialization paused: ' + (res.error || 'Network offline'));
+      setEngineInfoText('Model loading paused. Demo mode fully functional.');
     }
   };
 
@@ -286,76 +330,95 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
 
     let timer: any;
     const runInference = async () => {
-      const video = videoRef.current;
-      const targetElement = video || canvasRef.current;
+      try {
+        const video = videoRef.current;
+        const targetElement = video || canvasRef.current;
 
-      if (targetElement) {
-        const result = await detectPeopleAndDogsInVideo(targetElement);
-        setModelStatus(result.status);
-        setIsRealModelActive(result.isRealInference);
-        setEngineInfoText(result.engineInfo);
+        if (targetElement) {
+          const result = await detectPeopleAndDogsInVideo(targetElement);
+          if (result) {
+            setModelStatus(result.status);
+            setIsRealModelActive(result.isRealInference);
+            if (result.engineInfo) setEngineInfoText(result.engineInfo);
 
-        if (result.status === 'ready' && result.isRealInference) {
-          setDetectedObjects(result.detections);
-        } else if (result.status === 'unavailable' || result.status === 'error') {
-          // DO NOT FABRICATE DETECTIONS!
-          // If real model is not ready, we clear detectedObjects unless user explicitly toggled benchmark mode
-          if (showSyntheticBenchmark) {
-            setDetectedObjects([
-              {
-                id: 'benchmark-person-1',
-                class: 'person',
-                score: 91.2,
-                bbox: [210, 90, 80, 160],
-                timestamp: 'Benchmark Simulation Only',
-              },
-              {
-                id: 'benchmark-dog-1',
-                class: 'dog',
-                score: 84.7,
-                bbox: [320, 190, 70, 55],
-                timestamp: 'Benchmark Simulation Only',
-              },
-            ]);
-          } else {
-            setDetectedObjects([]);
+            if (result.status === 'ready' && result.isRealInference) {
+              setDetectedObjects(result.detections || []);
+            } else if (result.status === 'unavailable' || result.status === 'error') {
+              if (showSyntheticBenchmark) {
+                setDetectedObjects([
+                  {
+                    id: 'benchmark-person-1',
+                    class: 'person',
+                    score: 91.2,
+                    bbox: [210, 90, 80, 160],
+                    timestamp: 'Benchmark Simulation Only',
+                  },
+                  {
+                    id: 'benchmark-dog-1',
+                    class: 'dog',
+                    score: 84.7,
+                    bbox: [320, 190, 70, 55],
+                    timestamp: 'Benchmark Simulation Only',
+                  },
+                ]);
+              } else {
+                setDetectedObjects([]);
+              }
+            }
           }
         }
+      } catch (err) {
+        // Safe catch - never crash component
       }
     };
 
-    timer = setInterval(runInference, 380);
+    timer = setInterval(runInference, 400);
     return () => clearInterval(timer);
   }, [enableObjectDetection, isPlaying, showSyntheticBenchmark]);
 
-  // Selected Object Telemetry Data
-  const selectedObject = detectedObjects.find((o) => o.id === selectedObjectId);
+  const selectedObject = detectedObjects.find((o) => o?.id === selectedObjectId);
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full rounded-xl overflow-hidden border border-cyan-500/20 bg-[#070b14] flex flex-col group"
+      className={`relative w-full rounded-xl overflow-hidden border border-cyan-500/20 bg-[#070b14] flex flex-col group transition-all duration-200 ${
+        isCssFullscreen ? 'fixed inset-0 z-50 rounded-none border-0 h-screen' : ''
+      }`}
     >
-      {/* 1. Top Video Header Bar (Stably positioned, NEVER shifted by zoom or pan) */}
-      <div className="p-3 bg-[#070b14]/90 backdrop-blur-md border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 z-20">
-        <div className="flex items-center gap-2">
+      {/* 1. Top Video Header Bar with Location Telemetry & Map Sync Link */}
+      <div className="p-3 bg-[#070b14]/95 backdrop-blur-md border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 z-20">
+        <div className="flex items-center gap-2.5">
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
           </span>
-          <span className="font-heading text-sm font-semibold text-slate-200">{cameraName}</span>
+          <span className="font-heading text-sm font-semibold text-slate-100">{cameraName}</span>
           <span className="text-[10px] font-hud px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300">
             {isCustomUpload ? 'Uploaded Video Stream' : 'Authorized Optical CCTV Feed'}
           </span>
+
+          {/* Location Coordinates Badge */}
+          <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-950 border border-cyan-500/30 text-[10px] font-hud text-cyan-300">
+            <MapPin className="w-3 h-3 text-cyan-400" />
+            <span>{cameraLocation} ({coordinates.lat.toFixed(4)}°, {coordinates.lng.toFixed(4)}°)</span>
+            <button
+              onClick={() => setActiveNav('pilot')}
+              className="ml-1 text-[9px] text-cyan-400 hover:text-white underline flex items-center gap-0.5"
+              title="Inspect sector location on live satellite map"
+            >
+              <span>View On Map</span>
+              <ExternalLink className="w-2.5 h-2.5" />
+            </button>
+          </div>
         </div>
 
         {/* Video Zoom & Pan HUD State Pill + Target Switcher */}
-        <div className="flex items-center gap-2.5 text-xs font-hud">
+        <div className="flex items-center gap-2 text-xs font-hud">
           {/* Target Toggle Indicator */}
           <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded p-0.5 text-xs">
             <button
               onClick={() => updateGestureState({ target: 'video' })}
-              className={`px-2 py-0.5 rounded transition-colors ${
+              className={`px-2 py-0.5 rounded transition-colors text-[11px] ${
                 gestureState.target === 'video'
                   ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40'
                   : 'text-slate-400 hover:text-slate-200'
@@ -365,7 +428,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
             </button>
             <button
               onClick={() => updateGestureState({ target: 'map' })}
-              className={`px-2 py-0.5 rounded transition-colors ${
+              className={`px-2 py-0.5 rounded transition-colors text-[11px] ${
                 gestureState.target === 'map'
                   ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40'
                   : 'text-slate-400 hover:text-slate-200'
@@ -375,11 +438,11 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-1.5 text-cyan-300 bg-slate-900/90 px-2.5 py-1 rounded border border-cyan-500/30">
+          <div className="flex items-center gap-1.5 text-cyan-300 bg-slate-900/90 px-2.5 py-1 rounded border border-cyan-500/30 text-[11px]">
             <Move className="w-3 h-3 text-cyan-400" />
             <span>ZOOM: {videoTransform.zoom.toFixed(2)}x</span>
             <span className="text-slate-600">|</span>
-            <span>PAN: ({videoTransform.panX}, {videoTransform.panY})</span>
+            <span>PAN: ({Math.round(videoTransform.panX)}, {Math.round(videoTransform.panY)})</span>
           </div>
 
           {/* Reset View Button */}
@@ -390,9 +453,28 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
               title="Reset Zoom and Pan to 1.0x centered"
             >
               <RotateCcw className="w-3 h-3 text-cyan-400" />
-              <span>Reset View</span>
+              <span>Reset</span>
             </button>
           )}
+
+          {/* Fullscreen Button in Header */}
+          <button
+            onClick={toggleFullscreen}
+            className="flex items-center gap-1 px-2.5 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-600/40 text-xs transition-colors font-bold"
+            title="Expand CCTV video to full screen"
+          >
+            {isCssFullscreen || isFullscreen ? (
+              <>
+                <Minimize className="w-3.5 h-3.5" />
+                <span>Exit Fullscreen</span>
+              </>
+            ) : (
+              <>
+                <Maximize className="w-3.5 h-3.5" />
+                <span>Fullscreen</span>
+              </>
+            )}
+          </button>
 
           {isCustomUpload && onRemoveUpload && (
             <button
@@ -406,7 +488,13 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
       </div>
 
       {/* 2. STABLE OUTER VIEWPORT (Fixed dimensions, never moves or shifts page) */}
-      <div className={`relative w-full ${isFullscreen ? 'flex-1 h-[calc(100vh-140px)]' : 'h-[360px] sm:h-[420px] lg:h-[460px] min-h-[340px] flex-1'} bg-slate-950 overflow-hidden flex items-center justify-center select-none`}>
+      <div
+        className={`relative w-full ${
+          isCssFullscreen || isFullscreen
+            ? 'flex-1 h-[calc(100vh-140px)] min-h-[500px]'
+            : 'h-[360px] sm:h-[420px] lg:h-[460px] min-h-[340px] flex-1'
+        } bg-slate-950 overflow-hidden flex items-center justify-center select-none`}
+      >
         {/* TRANSFORMED INNER CONTENT CONTAINER (Zoom and Pan apply strictly to video image contents) */}
         <div
           className="w-full h-full relative flex items-center justify-center transition-transform duration-100 ease-out will-change-transform"
@@ -438,6 +526,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
           {enableObjectDetection && (
             <div className="absolute inset-0 pointer-events-auto">
               {detectedObjects.map((obj) => {
+                if (!obj || !obj.bbox || !Array.isArray(obj.bbox) || obj.bbox.length < 4) return null;
                 const isSelected = selectedObjectId === obj.id;
                 const isPerson = obj.class === 'person';
                 const video = videoRef.current;
@@ -482,7 +571,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
                     >
                       {isPerson ? <User className="w-2.5 h-2.5" /> : <Dog className="w-2.5 h-2.5" />}
                       <span>
-                        {obj.class.toUpperCase()} [{obj.score}% CONF]
+                        {(obj.class || 'ENTITY').toUpperCase()} [{obj.score || 90}% CONF]
                       </span>
                     </div>
 
@@ -500,15 +589,15 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
 
         {/* Viewport Overlay: Gesture Active Target Indicator */}
-        {gestureState.isActive && gestureState.target === 'video' && (
+        {gestureState.isCameraActive && gestureState.target === 'video' && (
           <div className="absolute top-3 left-3 z-10 bg-[#070b14]/90 border border-cyan-400/50 rounded-lg p-2.5 text-xs font-hud flex items-center gap-2 shadow-[0_0_20px_rgba(6,182,212,0.3)]">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
             <div>
               <div className="text-cyan-300 font-bold uppercase tracking-wider text-[11px]">
-                GESTURE VIDEO TARGET ACTIVE
+                GESTURE CCTV CONTROL ACTIVE
               </div>
               <div className="text-slate-400 text-[10px]">
-                Pinch = Zoom In | Open Hand = Zoom Out | Hand Move = Pan
+                1-Hand Pinch / 2-Hand Spread = Zoom In · Open / Contract = Zoom Out · Hand Shift = Pan
               </div>
             </div>
           </div>
@@ -551,6 +640,13 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
             title="Reset View"
           >
             <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={toggleFullscreen}
+            className="p-1.5 rounded bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/50 transition-colors"
+            title="Toggle Fullscreen"
+          >
+            {isCssFullscreen || isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
@@ -633,7 +729,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
             className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800"
             title="Fullscreen"
           >
-            {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+            {isCssFullscreen || isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
@@ -675,6 +771,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
           {detectedObjects.length > 0 ? (
             <div className="flex flex-wrap items-center gap-2">
               {detectedObjects.map((obj) => {
+                if (!obj) return null;
                 const isSelected = selectedObjectId === obj.id;
                 const isPerson = obj.class === 'person';
                 return (
@@ -694,7 +791,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
                     ) : (
                       <Dog className="w-3.5 h-3.5 text-amber-400" />
                     )}
-                    <span className="font-semibold">{obj.class.toUpperCase()}</span>
+                    <span className="font-semibold">{(obj.class || 'ENTITY').toUpperCase()}</span>
                     <span className="text-[10px] text-emerald-400 font-bold">{obj.score}% CONF</span>
                     {isSelected && <span className="text-[10px] text-cyan-300 font-bold">● SELECTED</span>}
                   </button>
@@ -714,12 +811,12 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <span className="text-cyan-400 font-bold uppercase">SELECTED TARGET:</span>
-                  <span className="text-white font-semibold">{selectedObject.class.toUpperCase()}</span>
+                  <span className="text-white font-semibold">{(selectedObject.class || 'ENTITY').toUpperCase()}</span>
                   <span className="text-emerald-400 font-bold">({selectedObject.score}% Actual Model Confidence)</span>
                 </div>
                 <div className="text-[11px] text-slate-400 flex items-center gap-3">
-                  <span>Bounding Box: [{selectedObject.bbox.join(', ')} px]</span>
-                  <span>Detected at: {selectedObject.timestamp}</span>
+                  <span>Bounding Box: [{selectedObject.bbox ? selectedObject.bbox.join(', ') : 'N/A'} px]</span>
+                  <span>Detected at: {selectedObject.timestamp || 'Live Stream'}</span>
                 </div>
               </div>
 

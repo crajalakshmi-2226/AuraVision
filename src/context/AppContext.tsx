@@ -396,9 +396,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const next = updater(prev);
         // Clamp zoom between 1.0 and 4.0
         const clampedZoom = Math.min(4.0, Math.max(1.0, next.zoom));
-        // Clamp pan based on current zoom so content doesn't permanently fly off screen
-        const maxPanX = (clampedZoom - 1) * 320;
-        const maxPanY = (clampedZoom - 1) * 200;
+        // Clamp pan so content doesn't permanently fly off screen, while allowing responsive pan at any zoom
+        const maxPanX = Math.max(160, (clampedZoom - 1) * 360);
+        const maxPanY = Math.max(120, (clampedZoom - 1) * 260);
         const clampedPanX = Math.min(maxPanX, Math.max(-maxPanX, next.panX));
         const clampedPanY = Math.min(maxPanY, Math.max(-maxPanY, next.panY));
         return {

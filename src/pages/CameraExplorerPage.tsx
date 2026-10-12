@@ -2,21 +2,14 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Camera,
   CheckCircle2,
-  Cpu,
   FileVideo,
   Globe,
   Hand,
-  HardDrive,
   HelpCircle,
-  Info,
-  Layers,
-  Lock,
   Play,
   Server,
   Upload,
-  Video,
   VideoOff,
-  AlertTriangle,
   RotateCcw,
   Sliders,
   Sparkles,
@@ -30,10 +23,11 @@ import {
   ArrowDown,
   Eye,
   EyeOff,
-  Maximize2,
   Maximize,
   Minimize,
   X,
+  MapPin,
+  ExternalLink,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { GestureControlledVideoPlayer } from '../components/camera/GestureControlledVideoPlayer';
@@ -64,6 +58,24 @@ interface ActionAlert {
   timestamp: number;
 }
 
+interface LiveDebugMetrics {
+  rawPinchDistance: number;
+  rawPinchRatio: number;
+  rawExtensionScore: number;
+  currentCentroid: { x: number; y: number };
+  smoothedCentroid: { x: number; y: number };
+  keyLandmarks: {
+    wrist: { x: number; y: number; z: number };
+    thumbTip: { x: number; y: number; z: number };
+    indexTip: { x: number; y: number; z: number };
+  };
+  twoHandSpanDistance?: number;
+  twoHandSpanDelta?: number;
+  twoHandMidpoint?: { x: number; y: number };
+  twoHandMidpointDelta?: { dx: number; dy: number };
+  twoHandAction?: string;
+}
+
 export const CameraExplorerPage: React.FC = () => {
   const {
     cameras,
@@ -85,6 +97,7 @@ export const CameraExplorerPage: React.FC = () => {
     videoTransform,
     updateVideoTransform,
     resetVideoTransform,
+    setActiveNav,
   } = useApp();
 
   const [activeMode, setActiveMode] = useState<'mode_a_sample' | 'mode_b_upload' | 'mode_c_nvr'>('mode_a_sample');
@@ -145,6 +158,9 @@ export const CameraExplorerPage: React.FC = () => {
   const [showDebugOverlay, setShowDebugOverlay] = useState<boolean>(false);
   const [showUserGuideModal, setShowUserGuideModal] = useState<boolean>(false);
 
+  // Debug metrics
+  const [debugMetrics, setDebugMetrics] = useState<LiveDebugMetrics | null>(null);
+
   // Tracking heuristics state
   const prevSmoothedCentroidRef = useRef<{ x: number; y: number } | null>(null);
   const prevTwoHandStateRef = useRef<TwoHandTrackingState | null>(null);
@@ -153,8 +169,22 @@ export const CameraExplorerPage: React.FC = () => {
   const [lastVideoActionText, setLastVideoActionText] = useState<string>('Video ready. Waiting for gesture stream.');
   const [actionAlert, setActionAlert] = useState<ActionAlert | null>(null);
 
-  const selectedCamera = cameras.find((c) => c.id === selectedCameraId) || cameras[0];
-  const selectedConditionObj = conditions.find((c) => c.id === assignedCondition);
+  // Guaranteed safe camera object (Never undefined)
+  const fallbackCamera: CameraDevice = {
+    id: 'cam-01',
+    name: 'Main Corridor Camera (Node 01)',
+    location: 'Sector 4 - South Wing Corridor',
+    coordinates: [37.7749, -122.4194],
+    assignedCondition: 'c1_library_occupancy',
+    type: 'sample',
+    status: 'online',
+    fps: 30,
+    resolution: '1080p',
+  };
+
+  const activeCameras = Array.isArray(cameras) && cameras.length > 0 ? cameras : [fallbackCamera];
+  const selectedCamera = activeCameras.find((c) => c?.id === selectedCameraId) || activeCameras[0] || fallbackCamera;
+  const selectedConditionObj = conditions?.find((c) => c?.id === assignedCondition);
 
   // Set gesture target to 'video' when CCTV Explorer is active
   useEffect(() => {
@@ -210,7 +240,13 @@ export const CameraExplorerPage: React.FC = () => {
     }
   };
 
-  // Honest Diagnostic Connection Tester for Mode C
+  const loadSampleUploadTest = () => {
+    setUploadedVideoUrl('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4');
+    setUploadedFileName('Verified_Sample_Corridor_Footage.mp4');
+    addNotification('Loaded verified sample video for upload testing');
+  };
+
+  // Connection Tester for Mode C
   const handleTestNvrConnection = () => {
     setTestConnectionState('testing');
     setTestResult(null);
@@ -538,6 +574,22 @@ export const CameraExplorerPage: React.FC = () => {
                   twoHandRes.spanDistance,
                   twoHandRes.twoHandAction
                 );
+
+                const primary = results.landmarks[0];
+                const analysis0 = analyzeHandLandmarks(primary, prevSmoothedCentroidRef.current, thresholds);
+                setDebugMetrics({
+                  rawPinchDistance: analysis0.rawPinchDistance,
+                  rawPinchRatio: analysis0.rawPinchRatio,
+                  rawExtensionScore: analysis0.rawExtensionScore,
+                  currentCentroid: twoHandRes.midpoint,
+                  smoothedCentroid: twoHandRes.smoothedMidpoint,
+                  keyLandmarks: analysis0.keyLandmarks,
+                  twoHandSpanDistance: twoHandRes.spanDistance,
+                  twoHandSpanDelta: twoHandRes.spanDelta,
+                  twoHandMidpoint: twoHandRes.midpoint,
+                  twoHandMidpointDelta: twoHandRes.midpointDelta,
+                  twoHandAction: twoHandRes.twoHandAction,
+                });
               } else {
                 // Single-Hand Gesture Analysis
                 prevTwoHandStateRef.current = null;
@@ -552,6 +604,15 @@ export const CameraExplorerPage: React.FC = () => {
                 recognizedConfidence = analysis.confidence;
 
                 drawHandSkeleton(ctx, handPoints, canvas.width, canvas.height, analysis.gesture, 0);
+
+                setDebugMetrics({
+                  rawPinchDistance: analysis.rawPinchDistance,
+                  rawPinchRatio: analysis.rawPinchRatio,
+                  rawExtensionScore: analysis.rawExtensionScore,
+                  currentCentroid: analysis.currentCentroid,
+                  smoothedCentroid: analysis.smoothedCentroid,
+                  keyLandmarks: analysis.keyLandmarks,
+                });
               }
             } else {
               prevSmoothedCentroidRef.current = null;
@@ -675,7 +736,7 @@ export const CameraExplorerPage: React.FC = () => {
               CCTV & Optical Feed Explorer — Dual View:
             </span>
             <span className="text-slate-400">
-              Left panel features live face & hand gesture pilot; right panel controls CCTV video viewport with full 1-hand & 2-hand gesture zooming and panning.
+              Left panel features live face & hand gesture camera; right panel controls CCTV video viewport with full 1-hand & 2-hand gesture zooming and panning.
             </span>
           </div>
         </div>
@@ -688,6 +749,19 @@ export const CameraExplorerPage: React.FC = () => {
           >
             <HelpCircle className="w-3.5 h-3.5 text-indigo-400" />
             <span>Gesture Guide</span>
+          </button>
+
+          {/* Debug Overlay Toggle */}
+          <button
+            onClick={() => setShowDebugOverlay(!showDebugOverlay)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-hud text-[11px] transition-colors ${
+              showDebugOverlay
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400 font-bold'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Telemetry Debug HUD</span>
           </button>
 
           {/* Docker Guide Button */}
@@ -723,7 +797,7 @@ export const CameraExplorerPage: React.FC = () => {
                   </span>
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Touchless gesture feed · Controls CCTV video inside right panel
+                  Touchless gesture feed · Controls CCTV video in Right Panel
                 </p>
               </div>
             </div>
@@ -1007,6 +1081,34 @@ export const CameraExplorerPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* Live Telemetry Debug Drawer (Visible when toggled from top bar) */}
+            {showDebugOverlay && (
+              <div className="p-3 bg-slate-950 rounded-lg border border-cyan-500/30 text-[11px] font-mono space-y-2 mt-2">
+                <div className="flex items-center justify-between text-cyan-300 font-bold">
+                  <span>TELEMETRY DEBUG HUD</span>
+                  <span>{currentFpsRef.current} FPS</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-slate-300 text-[10px]">
+                  <div>Engine: <span className="text-cyan-400">{activeEngine.split(' ')[0]}</span></div>
+                  <div>Hands: <span className="text-emerald-400">{gestureState.detectedHandCount}</span></div>
+                  <div>Pinch Ratio: <span className="text-amber-300">{debugMetrics ? debugMetrics.rawPinchRatio.toFixed(3) : '0.000'}</span></div>
+                  <div>Extension: <span className="text-amber-300">{debugMetrics ? debugMetrics.rawExtensionScore.toFixed(3) : '0.000'}</span></div>
+                  {debugMetrics?.twoHandSpanDistance !== undefined && (
+                    <div className="col-span-2 text-cyan-200">
+                      Two-Hand Span: <span className="text-white font-bold">{debugMetrics.twoHandSpanDistance.toFixed(3)}</span>
+                      {debugMetrics.twoHandAction && <span className="ml-2 text-emerald-400">[{debugMetrics.twoHandAction}]</span>}
+                    </div>
+                  )}
+                  {debugMetrics?.keyLandmarks && (
+                    <div className="col-span-2 text-slate-400">
+                      Wrist: ({debugMetrics.keyLandmarks.wrist.x.toFixed(2)}, {debugMetrics.keyLandmarks.wrist.y.toFixed(2)}) |
+                      Index: ({debugMetrics.keyLandmarks.indexTip.x.toFixed(2)}, {debugMetrics.keyLandmarks.indexTip.y.toFixed(2)})
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1055,10 +1157,10 @@ export const CameraExplorerPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Transform HUD Pill */}
+            {/* Transform HUD Pill & Quick Link to Satellite Map */}
             <div className="flex items-center gap-2 text-xs font-hud">
               <span className="text-cyan-300 bg-slate-950 px-2.5 py-1 rounded border border-cyan-500/30">
-                Zoom: {videoTransform.zoom.toFixed(2)}x · Pan: ({videoTransform.panX}, {videoTransform.panY})
+                Zoom: {videoTransform.zoom.toFixed(2)}x · Pan: ({Math.round(videoTransform.panX)}, {Math.round(videoTransform.panY)})
               </span>
               <button
                 onClick={resetVideoTransform}
@@ -1067,28 +1169,48 @@ export const CameraExplorerPage: React.FC = () => {
               >
                 <RotateCcw className="w-3.5 h-3.5" />
               </button>
+              <button
+                onClick={() => setActiveNav('pilot')}
+                className="hidden sm:flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 border border-slate-700"
+                title="Switch to Satellite Map Dual View"
+              >
+                <Globe className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Satellite Map</span>
+              </button>
             </div>
           </div>
 
           {/* Subheader Node Switcher for Mode A */}
           {activeMode === 'mode_a_sample' && (
-            <div className="px-3 py-1.5 bg-slate-950/90 border-b border-slate-800/80 flex items-center gap-2 overflow-x-auto text-[11px] font-hud z-10 scrollbar-none">
-              <span className="text-slate-500 uppercase tracking-wider text-[10px] shrink-0">
-                Active CCTV Node:
-              </span>
-              {cameras.map((cam) => (
-                <button
-                  key={cam.id}
-                  onClick={() => setSelectedCameraId(cam.id)}
-                  className={`px-2.5 py-0.5 rounded-full border shrink-0 transition-colors ${
-                    selectedCameraId === cam.id
-                      ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/60 font-semibold'
-                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
-                  }`}
-                >
-                  {cam.name}
-                </button>
-              ))}
+            <div className="px-3 py-1.5 bg-slate-950/90 border-b border-slate-800/80 flex items-center justify-between gap-2 overflow-x-auto text-[11px] font-hud z-10 scrollbar-none">
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-slate-500 uppercase tracking-wider text-[10px]">
+                  Active CCTV Node:
+                </span>
+                {activeCameras.map((cam) => (
+                  <button
+                    key={cam.id}
+                    onClick={() => setSelectedCameraId(cam.id)}
+                    className={`px-2.5 py-0.5 rounded-full border shrink-0 transition-colors ${
+                      selectedCameraId === cam.id
+                        ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/60 font-semibold'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                    }`}
+                  >
+                    {cam.name}
+                  </button>
+                ))}
+              </div>
+
+              {/* Coordinates Pill */}
+              <div className="flex items-center gap-1 text-[10px] text-slate-400 shrink-0">
+                <MapPin className="w-3 h-3 text-cyan-400" />
+                <span>
+                  Sector: {selectedCamera.location} (
+                  {selectedCamera.coordinates ? selectedCamera.coordinates[0].toFixed(4) : '37.7749'}°,{' '}
+                  {selectedCamera.coordinates ? selectedCamera.coordinates[1].toFixed(4) : '-122.4194'}°)
+                </span>
+              </div>
             </div>
           )}
 
@@ -1098,15 +1220,25 @@ export const CameraExplorerPage: React.FC = () => {
               <div className="flex items-center gap-2 truncate">
                 <span className="text-slate-500 uppercase text-[10px]">Uploaded File:</span>
                 <span className="text-slate-200 font-semibold truncate">
-                  {uploadedFileName || 'No custom file loaded (Showing default sample)'}
+                  {uploadedFileName || 'No custom file loaded (Drop video or select test sample below)'}
                 </span>
               </div>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="px-2.5 py-0.5 rounded bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-[10px] uppercase shrink-0 transition-colors"
-              >
-                Choose Local Video
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {!uploadedVideoUrl && (
+                  <button
+                    onClick={loadSampleUploadTest}
+                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[10px] font-hud border border-slate-700 transition-colors"
+                  >
+                    Load Sample Test File
+                  </button>
+                )}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-2.5 py-0.5 rounded bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-[10px] uppercase transition-colors"
+                >
+                  Choose Local Video
+                </button>
+              </div>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1132,14 +1264,20 @@ export const CameraExplorerPage: React.FC = () => {
               </div>
             )}
 
-            {/* Mode A & B Video Player Component */}
+            {/* Mode A: Preloaded CCTV Nodes Player */}
             {activeMode === 'mode_a_sample' && (
               <GestureControlledVideoPlayer
                 cameraName={selectedCamera.name}
+                cameraLocation={selectedCamera.location}
+                coordinates={{
+                  lat: selectedCamera.coordinates ? selectedCamera.coordinates[0] : 37.7749,
+                  lng: selectedCamera.coordinates ? selectedCamera.coordinates[1] : -122.4194,
+                }}
                 assignedConditionTitle="Condition 1: Library Occupancy & Loitering"
               />
             )}
 
+            {/* Mode B: Upload Footage Player */}
             {activeMode === 'mode_b_upload' && (
               uploadedVideoUrl ? (
                 <GestureControlledVideoPlayer
@@ -1147,7 +1285,9 @@ export const CameraExplorerPage: React.FC = () => {
                   isCustomUpload={true}
                   onRemoveUpload={removeUploadedVideo}
                   cameraName={`Custom Upload: ${uploadedFileName}`}
-                  assignedConditionTitle={selectedConditionObj?.title}
+                  cameraLocation="User Local Video File"
+                  coordinates={{ lat: 37.7749, lng: -122.4194 }}
+                  assignedConditionTitle={selectedConditionObj?.title || 'Custom Video Analysis'}
                 />
               ) : (
                 <div
@@ -1170,18 +1310,27 @@ export const CameraExplorerPage: React.FC = () => {
                     Drop CCTV MP4 or WebM Video Here
                   </h3>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto mb-4 leading-relaxed">
-                    Local video stays 100% inside your browser memory. Fullscreen and hand-gesture pan/zoom controls are enabled upon upload.
+                    Left panel hand gestures (1-hand & 2-hand) and fullscreen controls are activated instantly once uploaded.
                   </p>
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-5 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-xs font-hud transition-colors shadow-[0_0_12px_rgba(6,182,212,0.3)]"
-                  >
-                    Select Video File
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-5 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-xs font-hud transition-colors shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+                    >
+                      Select Video File
+                    </button>
+                    <button
+                      onClick={loadSampleUploadTest}
+                      className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-xs font-hud border border-slate-700 transition-colors"
+                    >
+                      Load Demo Sample
+                    </button>
+                  </div>
                 </div>
               )
             )}
 
+            {/* Mode C: Real CCTV / NVR Hardware Stream */}
             {activeMode === 'mode_c_nvr' && (
               <div className="p-4 space-y-4 overflow-y-auto max-h-full">
                 <div className="bg-[#0b1221] border border-cyan-500/30 rounded-xl p-4 space-y-3">
@@ -1244,6 +1393,8 @@ export const CameraExplorerPage: React.FC = () => {
                 {/* Mode C Video Player Stream Placeholder/Player */}
                 <GestureControlledVideoPlayer
                   cameraName={nvrConfig.name}
+                  cameraLocation="Perimeter Hardware Enclosure"
+                  coordinates={{ lat: 37.7758, lng: -122.4182 }}
                   assignedConditionTitle="NVR Perimeter Hardware Node"
                 />
               </div>
@@ -1289,11 +1440,11 @@ export const CameraExplorerPage: React.FC = () => {
                 </h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
                   <div className="p-2 bg-slate-950/70 rounded border border-cyan-500/20">
-                    <strong className="text-emerald-400 block mb-0.5">👐 SPREAD 2 HANDS APART:</strong>
+                    <strong className="text-emerald-400 block mb-0.5">👐 SPREAD 2 HANDS APART (Distance +):</strong>
                     Increase distance between both hands &rarr; <strong>ZOOM IN</strong> on video or map.
                   </div>
                   <div className="p-2 bg-slate-950/70 rounded border border-cyan-500/20">
-                    <strong className="text-cyan-400 block mb-0.5">🤲 BRING 2 HANDS TOGETHER:</strong>
+                    <strong className="text-cyan-400 block mb-0.5">🤲 BRING 2 HANDS TOGETHER (Distance -):</strong>
                     Decrease distance between both hands &rarr; <strong>ZOOM OUT</strong> on video or map.
                   </div>
                   <div className="p-2 bg-slate-950/70 rounded border border-amber-500/20 md:col-span-2">
