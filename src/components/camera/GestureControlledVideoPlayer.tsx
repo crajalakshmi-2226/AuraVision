@@ -203,6 +203,16 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
     setIsMuted(!isMuted);
   };
 
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
@@ -396,7 +406,7 @@ export const GestureControlledVideoPlayer: React.FC<VideoPlayerProps> = ({
       </div>
 
       {/* 2. STABLE OUTER VIEWPORT (Fixed dimensions, never moves or shifts page) */}
-      <div className="relative w-full h-[380px] sm:h-[460px] bg-slate-950 overflow-hidden flex items-center justify-center select-none">
+      <div className={`relative w-full ${isFullscreen ? 'flex-1 h-[calc(100vh-140px)]' : 'h-[360px] sm:h-[420px] lg:h-[460px] min-h-[340px] flex-1'} bg-slate-950 overflow-hidden flex items-center justify-center select-none`}>
         {/* TRANSFORMED INNER CONTENT CONTAINER (Zoom and Pan apply strictly to video image contents) */}
         <div
           className="w-full h-full relative flex items-center justify-center transition-transform duration-100 ease-out will-change-transform"

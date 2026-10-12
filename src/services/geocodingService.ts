@@ -55,6 +55,18 @@ export const PRESET_LOCATIONS: GeocodingResult[] = [
     lng: 55.2708,
     type: 'skyline',
   },
+  {
+    displayName: 'Grand Canyon South Rim, Arizona, USA',
+    lat: 36.0544,
+    lng: -112.1401,
+    type: 'landmark',
+  },
+  {
+    displayName: 'Great Pyramids of Giza & Sphinx, Egypt',
+    lat: 29.9792,
+    lng: 31.1342,
+    type: 'landmark',
+  },
 ];
 
 /**

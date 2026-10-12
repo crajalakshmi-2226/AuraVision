@@ -290,11 +290,7 @@ export function drawHandSkeleton(
 /**
  * Calculates scale-invariant hand gesture metrics from 21 landmarks
  */
-export function analyzeHandLandmarks(
-  landmarks: HandLandmarkPoint[],
-  prevSmoothedCentroid: { x: number; y: number } | null,
-  thresholds: GestureThresholds = DEFAULT_THRESHOLDS
-): {
+export interface HandAnalysisResult {
   gesture: GestureType;
   confidence: number;
   rawPinchDistance: number;
@@ -302,7 +298,19 @@ export function analyzeHandLandmarks(
   rawExtensionScore: number;
   currentCentroid: { x: number; y: number };
   smoothedCentroid: { x: number; y: number };
-} {
+  keyLandmarks: {
+    wrist: HandLandmarkPoint;
+    thumbTip: HandLandmarkPoint;
+    indexTip: HandLandmarkPoint;
+  };
+  movementDelta: { dx: number; dy: number };
+}
+
+export function analyzeHandLandmarks(
+  landmarks: HandLandmarkPoint[],
+  prevSmoothedCentroid: { x: number; y: number } | null,
+  thresholds: GestureThresholds = DEFAULT_THRESHOLDS
+): HandAnalysisResult {
   const wrist = landmarks[0];
   const thumbTip = landmarks[4];
   const indexTip = landmarks[8];
@@ -377,6 +385,9 @@ export function analyzeHandLandmarks(
     }
   }
 
+  const dx = prevSmoothedCentroid ? currentCentroid.x - prevSmoothedCentroid.x : 0;
+  const dy = prevSmoothedCentroid ? currentCentroid.y - prevSmoothedCentroid.y : 0;
+
   return {
     gesture,
     confidence,
@@ -385,5 +396,206 @@ export function analyzeHandLandmarks(
     rawExtensionScore,
     currentCentroid,
     smoothedCentroid,
+    keyLandmarks: {
+      wrist,
+      thumbTip,
+      indexTip,
+    },
+    movementDelta: { dx, dy },
   };
 }
+
+export interface TwoHandTrackingState {
+  spanDistance: number;
+  midpoint: { x: number; y: number };
+  smoothedMidpoint: { x: number; y: number };
+  timestamp: number;
+}
+
+export interface TwoHandAnalysisResult {
+  gesture: GestureType;
+  confidence: number;
+  twoHandAction: string;
+  spanDistance: number;
+  spanDelta: number;
+  midpoint: { x: number; y: number };
+  smoothedMidpoint: { x: number; y: number };
+  midpointDelta: { dx: number; dy: number };
+  nextState: TwoHandTrackingState;
+}
+
+/**
+ * Scale-invariant Two-Hand Gesture Analysis
+ * - Spreading two hands apart (span +) -> Zoom In
+ * - Bringing two hands closer together (span -) -> Zoom Out
+ * - Moving both hands together left/right/up/down -> Pan
+ */
+export function analyzeTwoHandGestures(
+  hand0: HandLandmarkPoint[],
+  hand1: HandLandmarkPoint[],
+  prevState: TwoHandTrackingState | null,
+  thresholds: GestureThresholds = DEFAULT_THRESHOLDS
+): TwoHandAnalysisResult {
+  // Centroids of both hands in mirrored coordinate space
+  const c0x = 1 - (hand0[0].x + hand0[5].x + hand0[17].x) / 3;
+  const c0y = (hand0[0].y + hand0[5].y + hand0[17].y) / 3;
+
+  const c1x = 1 - (hand1[0].x + hand1[5].x + hand1[17].x) / 3;
+  const c1y = (hand1[0].y + hand1[5].y + hand1[17].y) / 3;
+
+  const spanDistance = Math.hypot(c0x - c1x, c0y - c1y);
+  const midpoint = {
+    x: (c0x + c1x) / 2,
+    y: (c0y + c1y) / 2,
+  };
+
+  const alpha = thresholds.smoothingFactor || 0.35;
+  const smoothedMidpoint = prevState
+    ? {
+        x: alpha * midpoint.x + (1 - alpha) * prevState.smoothedMidpoint.x,
+        y: alpha * midpoint.y + (1 - alpha) * prevState.smoothedMidpoint.y,
+      }
+    : midpoint;
+
+  const spanDelta = prevState ? spanDistance - prevState.spanDistance : 0;
+  const dx = prevState ? midpoint.x - prevState.smoothedMidpoint.x : 0;
+  const dy = prevState ? midpoint.y - prevState.smoothedMidpoint.y : 0;
+
+  let gesture: GestureType = 'none';
+  let confidence = 0.85;
+  let twoHandAction = 'TWO_HAND_STEADY';
+
+  // Rule A: Two-Hand Zoom via Span Distance Change
+  // User spreading hands apart: space increases -> ZOOM IN
+  if (spanDelta > 0.018) {
+    gesture = 'pinch_zoom_in';
+    twoHandAction = '2-HAND SPREAD [ZOOM IN]';
+    confidence = Math.min(0.99, Math.max(0.78, Math.abs(spanDelta) * 25));
+  }
+  // User bringing hands closer: space decreases -> ZOOM OUT
+  else if (spanDelta < -0.018) {
+    gesture = 'open_hand_zoom_out';
+    twoHandAction = '2-HAND CONTRACT [ZOOM OUT]';
+    confidence = Math.min(0.99, Math.max(0.78, Math.abs(spanDelta) * 25));
+  }
+  // Rule B: Two-Hand Synchronized Motion Panning
+  // Hands moving together left/right/up/down
+  else if (prevState && (Math.abs(dx) > thresholds.deadZone || Math.abs(dy) > thresholds.deadZone)) {
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      gesture = dx > 0 ? 'pan_right' : 'pan_left';
+      twoHandAction = dx > 0 ? '2-HAND PAN RIGHT' : '2-HAND PAN LEFT';
+    } else {
+      gesture = dy > 0 ? 'pan_down' : 'pan_up';
+      twoHandAction = dy > 0 ? '2-HAND PAN DOWN' : '2-HAND PAN UP';
+    }
+    confidence = Math.min(0.98, Math.max(0.72, Math.max(Math.abs(dx), Math.abs(dy)) * 9));
+  }
+
+  const nextState: TwoHandTrackingState = {
+    spanDistance,
+    midpoint,
+    smoothedMidpoint,
+    timestamp: Date.now(),
+  };
+
+  return {
+    gesture,
+    confidence,
+    twoHandAction,
+    spanDistance,
+    spanDelta,
+    midpoint,
+    smoothedMidpoint,
+    midpointDelta: { dx, dy },
+    nextState,
+  };
+}
+
+/**
+ * Renders glowing two-hand link and directional navigation badges onto HUD canvas
+ */
+export function drawTwoHandLink(
+  ctx: CanvasRenderingContext2D,
+  hand0: HandLandmarkPoint[],
+  hand1: HandLandmarkPoint[],
+  canvasWidth: number,
+  canvasHeight: number,
+  currentGesture: GestureType,
+  spanDistance: number,
+  actionText?: string
+) {
+  if (!hand0 || !hand1 || hand0.length < 21 || hand1.length < 21) return;
+
+  const toScreenX = (x: number) => (1 - x) * canvasWidth;
+  const toScreenY = (y: number) => y * canvasHeight;
+
+  const h0Wrist = hand0[0];
+  const h1Wrist = hand1[0];
+
+  const x0 = toScreenX(h0Wrist.x);
+  const y0 = toScreenY(h0Wrist.y);
+  const x1 = toScreenX(h1Wrist.x);
+  const y1 = toScreenY(h1Wrist.y);
+
+  const midX = (x0 + x1) / 2;
+  const midY = (y0 + y1) / 2;
+
+  ctx.save();
+
+  // Glowing connecting beam between both wrists
+  ctx.strokeStyle =
+    currentGesture === 'pinch_zoom_in'
+      ? '#22c55e'
+      : currentGesture === 'open_hand_zoom_out'
+      ? '#38bdf8'
+      : currentGesture !== 'none'
+      ? '#f59e0b'
+      : 'rgba(56, 189, 248, 0.4)';
+  ctx.lineWidth = currentGesture !== 'none' ? 3.0 : 1.8;
+  ctx.setLineDash([8, 6]);
+
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+
+  ctx.setLineDash([]); // Reset dash
+
+  // Midpoint HUD Telemetry Box
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+  ctx.strokeStyle = currentGesture !== 'none' ? '#22d3ee' : 'rgba(56, 189, 248, 0.6)';
+  ctx.lineWidth = 1.5;
+
+  const boxW = 160;
+  const boxH = 34;
+  ctx.fillRect(midX - boxW / 2, midY - boxH / 2, boxW, boxH);
+  ctx.strokeRect(midX - boxW / 2, midY - boxH / 2, boxW, boxH);
+
+  // Text inside box
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('2-HAND NAVIGATION LINK', midX, midY - 4);
+
+  ctx.fillStyle = currentGesture !== 'none' ? '#ffffff' : '#94a3b8';
+  ctx.font = 'bold 10px monospace';
+  const label =
+    actionText ||
+    (currentGesture === 'pinch_zoom_in'
+      ? '<-- SPREAD [ZOOM IN] -->'
+      : currentGesture === 'open_hand_zoom_out'
+      ? '--> CONTRACT [ZOOM OUT] <--'
+      : currentGesture === 'pan_left'
+      ? '<<<< 2-HAND PAN LEFT <<<<'
+      : currentGesture === 'pan_right'
+      ? '>>>> 2-HAND PAN RIGHT >>>>'
+      : currentGesture === 'pan_up'
+      ? '^^^^ 2-HAND PAN UP ^^^^'
+      : currentGesture === 'pan_down'
+      ? 'vvvv 2-HAND PAN DOWN vvvv'
+      : `SPAN: ${(spanDistance * 100).toFixed(0)}% [READY]`);
+  ctx.fillText(label, midX, midY + 10);
+
+  ctx.restore();
+}
+

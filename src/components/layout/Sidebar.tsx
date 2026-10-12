@@ -54,8 +54,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
     },
     {
       id: 'camera',
-      label: 'CCTV & Video Explorer',
+      label: 'CCTV & Optical Feed Explorer',
       icon: Camera,
+      badge: 'DUAL VIEW',
+      badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold',
     },
     {
       id: 'conditions',

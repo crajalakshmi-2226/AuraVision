@@ -138,6 +138,32 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({
     }
   }, [mapAction, gestureState.target]);
 
+  // Keep userLocation marker continuously synchronized
+  useEffect(() => {
+    if (!userLocation || !mapInstanceRef.current) return;
+    const { lat, lng } = userLocation;
+    if (userMarkerRef.current) {
+      userMarkerRef.current.setLatLng([lat, lng]);
+    } else {
+      const userIconHtml = `
+        <div class="relative flex items-center justify-center w-8 h-8">
+          <div class="absolute inset-0 bg-emerald-500/30 rounded-full animate-ping"></div>
+          <div class="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white flex items-center justify-center text-white text-[10px] font-bold">
+            YOU
+          </div>
+        </div>
+      `;
+      const icon = L.divIcon({
+        html: userIconHtml,
+        className: 'user-loc-marker',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+      });
+      const marker = L.marker([lat, lng], { icon }).addTo(mapInstanceRef.current);
+      userMarkerRef.current = marker;
+    }
+  }, [userLocation]);
+
   // Render camera and alert markers with custom high-tech SVG pins
   useEffect(() => {
     if (!mapInstanceRef.current || !markersLayerRef.current) return;

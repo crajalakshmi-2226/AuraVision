@@ -3,8 +3,13 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Camera,
   CheckCircle2,
+  ChevronRight,
   Compass,
   Crosshair,
   Dog,
@@ -13,9 +18,11 @@ import {
   Globe,
   Hand,
   HelpCircle,
+  Info,
   Layers,
   Locate,
   Maximize2,
+  Minimize2,
   Move,
   Navigation,
   RefreshCw,
@@ -26,14 +33,15 @@ import {
   ShieldAlert,
   Sliders,
   Sparkles,
+  Terminal,
   User,
   Video,
   VideoOff,
   Volume2,
   X,
+  Zap,
   ZoomIn,
   ZoomOut,
-  Info,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { CameraDevice, GestureType, TrackingStatus } from '../types';
@@ -41,9 +49,14 @@ import {
   initializeHandLandmarker,
   drawHandSkeleton,
   analyzeHandLandmarks,
+  analyzeTwoHandGestures,
+  drawTwoHandLink,
   DEFAULT_THRESHOLDS,
   GestureThresholds,
   HandLandmarkPoint,
+  HandAnalysisResult,
+  TwoHandTrackingState,
+  TwoHandAnalysisResult,
 } from '../services/handTrackingService';
 import { detectFaceInVideo, drawFaceReticle, FaceDetectionResult } from '../services/faceDetectionService';
 import { searchLocations, parseCoordinates, GeocodingResult, PRESET_LOCATIONS } from '../services/geocodingService';
@@ -74,7 +87,7 @@ const TILE_LAYERS: TileLayerOption[] = [
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
     maxZoom: 19,
-    description: 'High-resolution global satellite photography (Public non-commercial evaluation tier)',
+    description: 'High-resolution global satellite photography (Public evaluation tier)',
   },
   {
     id: 'osm_street',
@@ -95,6 +108,27 @@ const TILE_LAYERS: TileLayerOption[] = [
     description: 'OpenStreetMap with dark tactical filter for defense & security command centers',
   },
 ];
+
+interface LiveDebugMetrics {
+  wrist: { x: number; y: number; z: number };
+  thumbTip: { x: number; y: number; z: number };
+  indexTip: { x: number; y: number; z: number };
+  rawPinchDistance: number;
+  rawPinchRatio: number;
+  pinchThreshold: number;
+  rawExtensionScore: number;
+  currentCentroid: { x: number; y: number };
+  movementDelta: { dx: number; dy: number };
+  movementDirection: string;
+  confidence: number;
+  fps: number;
+}
+
+interface ActionAlert {
+  text: string;
+  type: 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'pan_up' | 'pan_down' | 'reset' | 'preset';
+  timestamp: number;
+}
 
 export const SatelliteGesturePilotPage: React.FC = () => {
   // App context states
@@ -127,6 +161,9 @@ export const SatelliteGesturePilotPage: React.FC = () => {
   const classicHandsRef = useRef<any>(null);
   const lastVideoTimeRef = useRef<number>(-1);
   const isClassicBusyRef = useRef<boolean>(false);
+  const frameCountRef = useRef<number>(0);
+  const lastFpsCalcTimeRef = useRef<number>(performance.now());
+  const currentFpsRef = useRef<number>(0);
 
   const [isVideoReady, setIsVideoReady] = useState<boolean>(false);
   const [modelStatus, setModelStatus] = useState<TrackingStatus>('loading_model');
@@ -137,17 +174,24 @@ export const SatelliteGesturePilotPage: React.FC = () => {
     label: 'Face not detected',
   });
 
-  // Gesture calibration settings
+  // Gesture calibration & settings
   const [isGestureControlEnabled, setIsGestureControlEnabled] = useState<boolean>(true);
   const [gestureSensitivity, setGestureSensitivity] = useState<number>(1.0);
   const [thresholds, setThresholds] = useState<GestureThresholds>(DEFAULT_THRESHOLDS);
   const [showCalibrationDrawer, setShowCalibrationDrawer] = useState<boolean>(false);
+  const [showDebugOverlay, setShowDebugOverlay] = useState<boolean>(false);
+  const [showUserGuideModal, setShowUserGuideModal] = useState<boolean>(false);
+
+  // Live Debug Metrics State
+  const [debugMetrics, setDebugMetrics] = useState<LiveDebugMetrics | null>(null);
 
   // Tracking heuristics state
   const prevSmoothedCentroidRef = useRef<{ x: number; y: number } | null>(null);
+  const prevTwoHandStateRef = useRef<TwoHandTrackingState | null>(null);
   const lastActionTimeRef = useRef<number>(0);
   const lastTriggeredGestureRef = useRef<GestureType>('none');
   const [lastMapActionText, setLastMapActionText] = useState<string>('Map ready. Waiting for gesture stream.');
+  const [actionAlert, setActionAlert] = useState<ActionAlert | null>(null);
 
   // --- 2. LEAFLET SATELLITE MAP REFS & STATES ---
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -177,6 +221,15 @@ export const SatelliteGesturePilotPage: React.FC = () => {
   // Default coordinate center
   const defaultCenter: [number, number] = [37.7749, -122.4194];
   const defaultZoom = 15;
+
+  // Auto-dismiss action alert
+  useEffect(() => {
+    if (!actionAlert) return;
+    const timer = setTimeout(() => {
+      setActionAlert(null);
+    }, 1800);
+    return () => clearTimeout(timer);
+  }, [actionAlert]);
 
   // Sync gesture target to 'map' when this page is active
   useEffect(() => {
@@ -405,7 +458,12 @@ export const SatelliteGesturePilotPage: React.FC = () => {
     }
 
     addNotification(`Centered satellite map on: ${loc.displayName}`);
-    setLastMapActionText(`Navigated to: ${loc.displayName.substring(0, 40)}...`);
+    setLastMapActionText(`Navigated to: ${loc.displayName.substring(0, 36)}...`);
+    setActionAlert({
+      text: `NAVIGATED TO: ${loc.displayName.split(',')[0]}`,
+      type: 'preset',
+      timestamp: Date.now(),
+    });
   };
 
   // Browser Geolocation Permission Request
@@ -464,6 +522,11 @@ export const SatelliteGesturePilotPage: React.FC = () => {
 
         addNotification(`Device location acquired: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
         setLastMapActionText(`Map centered on device GPS: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+        setActionAlert({
+          text: `CENTERED ON DEVICE GPS: ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+          type: 'preset',
+          timestamp: Date.now(),
+        });
       },
       (err) => {
         setIsLocating(false);
@@ -484,6 +547,11 @@ export const SatelliteGesturePilotPage: React.FC = () => {
       setSelectedLocationName('San Francisco Command Sector (Default)');
       setLastMapActionText('Map reset to default surveillance coordinates');
       addNotification('Satellite map reset to default center');
+      setActionAlert({
+        text: 'MAP RESET TO DEFAULT SECTOR',
+        type: 'reset',
+        timestamp: Date.now(),
+      });
     }
   };
 
@@ -491,8 +559,14 @@ export const SatelliteGesturePilotPage: React.FC = () => {
   const handleManualZoom = (delta: number) => {
     if (mapInstanceRef.current) {
       const z = mapInstanceRef.current.getZoom();
-      mapInstanceRef.current.setZoom(z + delta, { animate: true });
-      setLastMapActionText(`Manual Zoom ${delta > 0 ? 'IN' : 'OUT'} to ${z + delta}x`);
+      const newZoom = z + delta;
+      mapInstanceRef.current.setZoom(newZoom, { animate: true });
+      setLastMapActionText(`Manual Zoom ${delta > 0 ? 'IN' : 'OUT'} to ${newZoom}x`);
+      setActionAlert({
+        text: delta > 0 ? `MANUAL ZOOM IN (+1) · ${newZoom}x` : `MANUAL ZOOM OUT (-1) · ${newZoom}x`,
+        type: delta > 0 ? 'zoom_in' : 'zoom_out',
+        timestamp: Date.now(),
+      });
     }
   };
 
@@ -519,31 +593,63 @@ export const SatelliteGesturePilotPage: React.FC = () => {
           if (gesture === 'pinch_zoom_in') {
             const currentZoom = map.getZoom();
             if (currentZoom < 19) {
-              map.setZoom(currentZoom + 1, { animate: true });
-              setLastMapActionText(`PINCH ZOOM IN applied (Zoom: ${currentZoom + 1}x)`);
+              const newZ = currentZoom + 1;
+              map.setZoom(newZ, { animate: true });
+              setLastMapActionText(`PINCH ZOOM IN applied (Zoom: ${newZ}x)`);
+              setActionAlert({
+                text: `PINCH ZOOM IN (+1) · ${newZ}x`,
+                type: 'zoom_in',
+                timestamp: Date.now(),
+              });
             }
           } else if (gesture === 'open_hand_zoom_out') {
             const currentZoom = map.getZoom();
             if (currentZoom > 2) {
-              map.setZoom(currentZoom - 1, { animate: true });
-              setLastMapActionText(`OPEN HAND ZOOM OUT applied (Zoom: ${currentZoom - 1}x)`);
+              const newZ = currentZoom - 1;
+              map.setZoom(newZ, { animate: true });
+              setLastMapActionText(`OPEN HAND ZOOM OUT applied (Zoom: ${newZ}x)`);
+              setActionAlert({
+                text: `OPEN HAND ZOOM OUT (-1) · ${newZ}x`,
+                type: 'zoom_out',
+                timestamp: Date.now(),
+              });
             }
           } else if (gesture === 'pan_left') {
             const step = Math.round(90 * sensitivity);
             map.panBy([-step, 0], { animate: true, duration: 0.25 });
             setLastMapActionText(`PAN LEFT applied (${step}px)`);
+            setActionAlert({
+              text: `PAN LEFT (${step}px)`,
+              type: 'pan_left',
+              timestamp: Date.now(),
+            });
           } else if (gesture === 'pan_right') {
             const step = Math.round(90 * sensitivity);
             map.panBy([step, 0], { animate: true, duration: 0.25 });
             setLastMapActionText(`PAN RIGHT applied (${step}px)`);
+            setActionAlert({
+              text: `PAN RIGHT (${step}px)`,
+              type: 'pan_right',
+              timestamp: Date.now(),
+            });
           } else if (gesture === 'pan_up') {
             const step = Math.round(75 * sensitivity);
             map.panBy([0, -step], { animate: true, duration: 0.25 });
             setLastMapActionText(`PAN UP applied (${step}px)`);
+            setActionAlert({
+              text: `PAN UP (${step}px)`,
+              type: 'pan_up',
+              timestamp: Date.now(),
+            });
           } else if (gesture === 'pan_down') {
             const step = Math.round(75 * sensitivity);
             map.panBy([0, step], { animate: true, duration: 0.25 });
             setLastMapActionText(`PAN DOWN applied (${step}px)`);
+            setActionAlert({
+              text: `PAN DOWN (${step}px)`,
+              type: 'pan_down',
+              timestamp: Date.now(),
+            });
           }
         }
       } else {
@@ -617,7 +723,7 @@ export const SatelliteGesturePilotPage: React.FC = () => {
         const landmarker = await initializeHandLandmarker();
         if (landmarker && !isDisposed) {
           tasksLandmarkerRef.current = landmarker;
-          setActiveEngine('MediaPipe Tasks HandLandmarker');
+          setActiveEngine('MediaPipe Tasks HandLandmarker (WASM GPU/CPU)');
           setModelStatus('waiting_hand');
           return;
         }
@@ -677,6 +783,15 @@ export const SatelliteGesturePilotPage: React.FC = () => {
         return;
       }
 
+      // FPS tracking
+      frameCountRef.current++;
+      const nowMs = performance.now();
+      if (nowMs - lastFpsCalcTimeRef.current >= 1000) {
+        currentFpsRef.current = Math.round((frameCountRef.current * 1000) / (nowMs - lastFpsCalcTimeRef.current));
+        frameCountRef.current = 0;
+        lastFpsCalcTimeRef.current = nowMs;
+      }
+
       // Sync canvas dimensions
       if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
         canvas.width = video.videoWidth;
@@ -689,7 +804,7 @@ export const SatelliteGesturePilotPage: React.FC = () => {
         return;
       }
 
-      // CLEAR HUD CANVAS (Keeps live video feed 100% visible, zero black overlay)
+      // CLEAR HUD CANVAS (Keeps live video feed 100% visible, zero opaque black background)
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // --- A. FACE DETECTION (Upper Frame Analyzer) ---
@@ -703,6 +818,7 @@ export const SatelliteGesturePilotPage: React.FC = () => {
       let detectedHandCount = 0;
       let recognizedGesture: GestureType = 'none';
       let recognizedConfidence = 0;
+      let latestAnalysis: HandAnalysisResult | null = null;
 
       // ENGINE 1: Tasks HandLandmarker
       if (tasksLandmarkerRef.current) {
@@ -715,24 +831,53 @@ export const SatelliteGesturePilotPage: React.FC = () => {
             if (results && results.landmarks && results.landmarks.length > 0) {
               detectedHandCount = results.landmarks.length;
 
-              results.landmarks.forEach((handPoints: HandLandmarkPoint[], idx: number) => {
-                if (idx === 0) {
-                  const analysis = analyzeHandLandmarks(
-                    handPoints,
-                    prevSmoothedCentroidRef.current,
-                    thresholds
-                  );
-                  prevSmoothedCentroidRef.current = analysis.smoothedCentroid;
-                  recognizedGesture = analysis.gesture;
-                  recognizedConfidence = analysis.confidence;
+              if (detectedHandCount >= 2) {
+                // Multi-Hand: 2-Hand Gesture Recognition
+                const twoHandRes = analyzeTwoHandGestures(
+                  results.landmarks[0],
+                  results.landmarks[1],
+                  prevTwoHandStateRef.current,
+                  thresholds
+                );
+                prevTwoHandStateRef.current = twoHandRes.nextState;
+                recognizedGesture = twoHandRes.gesture;
+                recognizedConfidence = twoHandRes.confidence;
 
-                  drawHandSkeleton(ctx, handPoints, canvas.width, canvas.height, analysis.gesture, idx);
-                } else {
-                  drawHandSkeleton(ctx, handPoints, canvas.width, canvas.height, 'none', idx);
-                }
-              });
+                // Draw skeleton for both hands
+                results.landmarks.forEach((handPoints: HandLandmarkPoint[], idx: number) => {
+                  drawHandSkeleton(ctx, handPoints, canvas.width, canvas.height, idx === 0 ? twoHandRes.gesture : 'none', idx);
+                });
+
+                // Draw glowing two-hand navigation link & directional HUD
+                drawTwoHandLink(
+                  ctx,
+                  results.landmarks[0],
+                  results.landmarks[1],
+                  canvas.width,
+                  canvas.height,
+                  twoHandRes.gesture,
+                  twoHandRes.spanDistance,
+                  twoHandRes.twoHandAction
+                );
+              } else {
+                // Single-Hand Gesture Recognition
+                prevTwoHandStateRef.current = null;
+                const handPoints = results.landmarks[0];
+                const analysis = analyzeHandLandmarks(
+                  handPoints,
+                  prevSmoothedCentroidRef.current,
+                  thresholds
+                );
+                latestAnalysis = analysis;
+                prevSmoothedCentroidRef.current = analysis.smoothedCentroid;
+                recognizedGesture = analysis.gesture;
+                recognizedConfidence = analysis.confidence;
+
+                drawHandSkeleton(ctx, handPoints, canvas.width, canvas.height, analysis.gesture, 0);
+              }
             } else {
               prevSmoothedCentroidRef.current = null;
+              prevTwoHandStateRef.current = null;
             }
           }
         } catch (e) {}
@@ -747,16 +892,46 @@ export const SatelliteGesturePilotPage: React.FC = () => {
 
             if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
               detectedHandCount = res.multiHandLandmarks.length;
-              const primary = res.multiHandLandmarks[0];
 
-              const analysis = analyzeHandLandmarks(primary, prevSmoothedCentroidRef.current, thresholds);
-              prevSmoothedCentroidRef.current = analysis.smoothedCentroid;
-              recognizedGesture = analysis.gesture;
-              recognizedConfidence = analysis.confidence;
+              if (detectedHandCount >= 2) {
+                const twoHandRes = analyzeTwoHandGestures(
+                  res.multiHandLandmarks[0],
+                  res.multiHandLandmarks[1],
+                  prevTwoHandStateRef.current,
+                  thresholds
+                );
+                prevTwoHandStateRef.current = twoHandRes.nextState;
+                recognizedGesture = twoHandRes.gesture;
+                recognizedConfidence = twoHandRes.confidence;
 
-              drawHandSkeleton(ctx, primary, canvas.width, canvas.height, analysis.gesture, 0);
+                res.multiHandLandmarks.forEach((pts: any, idx: number) => {
+                  drawHandSkeleton(ctx, pts, canvas.width, canvas.height, idx === 0 ? twoHandRes.gesture : 'none', idx);
+                });
+
+                drawTwoHandLink(
+                  ctx,
+                  res.multiHandLandmarks[0],
+                  res.multiHandLandmarks[1],
+                  canvas.width,
+                  canvas.height,
+                  twoHandRes.gesture,
+                  twoHandRes.spanDistance,
+                  twoHandRes.twoHandAction
+                );
+              } else {
+                prevTwoHandStateRef.current = null;
+                const primary = res.multiHandLandmarks[0];
+                const analysis = analyzeHandLandmarks(primary, prevSmoothedCentroidRef.current, thresholds);
+                latestAnalysis = analysis;
+                prevSmoothedCentroidRef.current = analysis.smoothedCentroid;
+                recognizedGesture = analysis.gesture;
+                recognizedConfidence = analysis.confidence;
+
+                drawHandSkeleton(ctx, primary, canvas.width, canvas.height, analysis.gesture, 0);
+              }
             } else {
               prevSmoothedCentroidRef.current = null;
+              prevTwoHandStateRef.current = null;
             }
           });
 
@@ -766,6 +941,33 @@ export const SatelliteGesturePilotPage: React.FC = () => {
             isClassicBusyRef.current = false;
           }
         }
+      }
+
+      // Update Debug Metrics if hand analysis occurred
+      if (latestAnalysis) {
+        const a: HandAnalysisResult = latestAnalysis;
+        let dirLabel = 'In Dead Zone';
+        if (a.gesture === 'pan_left') dirLabel = 'PANNING LEFT';
+        else if (a.gesture === 'pan_right') dirLabel = 'PANNING RIGHT';
+        else if (a.gesture === 'pan_up') dirLabel = 'PANNING UP';
+        else if (a.gesture === 'pan_down') dirLabel = 'PANNING DOWN';
+
+        setDebugMetrics({
+          wrist: a.keyLandmarks.wrist,
+          thumbTip: a.keyLandmarks.thumbTip,
+          indexTip: a.keyLandmarks.indexTip,
+          rawPinchDistance: a.rawPinchDistance,
+          rawPinchRatio: a.rawPinchRatio,
+          pinchThreshold: thresholds.pinchThreshold,
+          rawExtensionScore: a.rawExtensionScore,
+          currentCentroid: a.currentCentroid,
+          movementDelta: a.movementDelta,
+          movementDirection: dirLabel,
+          confidence: recognizedConfidence,
+          fps: currentFpsRef.current,
+        });
+      } else if (detectedHandCount === 0) {
+        setDebugMetrics(null);
       }
 
       // Execute gesture action on map
@@ -814,24 +1016,53 @@ export const SatelliteGesturePilotPage: React.FC = () => {
   const currentTileConfig = TILE_LAYERS.find((t) => t.id === activeLayerId) || TILE_LAYERS[0];
 
   return (
-    <div className="w-full flex flex-col gap-4">
+    <div className="w-full flex flex-col gap-4 font-sans select-none">
       {/* Top Banner Notice: What the map can and cannot reveal */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2 text-slate-300">
-          <Info className="w-4 h-4 text-cyan-400 shrink-0" />
-          <span>
-            <strong>Satellite Situational Explorer:</strong> Explore any global location with hands-free gesture control.
-            Satellite photography provides historic geospatial imagery and does <em>not</em> show live pedestrians or dogs. Optical person and dog detection operates strictly within authorized CCTV video feeds.
-          </span>
+        <div className="flex items-center gap-2.5 text-slate-300">
+          <div className="p-1 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-400">
+            <Globe className="w-4 h-4 shrink-0" />
+          </div>
+          <div>
+            <span className="font-heading font-semibold text-slate-100 mr-1.5">
+              Dual-Panel Satellite & Touchless Gesture Pilot:
+            </span>
+            <span className="text-slate-400">
+              Interactive Leaflet satellite map controlled via real-time webcam hand gestures and face tracking.
+            </span>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {/* User Guide Button */}
+          <button
+            onClick={() => setShowUserGuideModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-700 font-hud text-[11px] transition-colors"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Gesture Guide</span>
+          </button>
+
+          {/* Debug Overlay Toggle */}
+          <button
+            onClick={() => setShowDebugOverlay(!showDebugOverlay)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-hud text-[11px] transition-colors ${
+              showDebugOverlay
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400 font-bold'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Telemetry Debug HUD</span>
+          </button>
+
+          {/* Tile Layer Modal Button */}
           <button
             onClick={() => setShowLayerModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 font-hud text-[11px]"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 font-hud text-[11px]"
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>Tile Layer Config</span>
+            <span>Layer Options</span>
           </button>
         </div>
       </div>
@@ -839,13 +1070,13 @@ export const SatelliteGesturePilotPage: React.FC = () => {
       {/* ============================================================== */}
       {/* RESPONSIVE FULL-SCREEN TWO-PANEL INTERFACE (Left: Camera, Right: Map) */}
       {/* ============================================================== */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 h-[calc(100vh-210px)] min-h-[640px]">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 h-[calc(100vh-215px)] min-h-[640px]">
         {/* ============================================================ */}
         {/* LEFT PANEL — Live Face and Hand Camera                       */}
         {/* ============================================================ */}
         <div className="lg:col-span-5 flex flex-col bg-[#070b14] border border-cyan-500/20 rounded-xl overflow-hidden shadow-2xl">
           {/* Left Panel Header */}
-          <div className="p-3.5 bg-slate-900/80 border-b border-slate-800 flex items-center justify-between">
+          <div className="p-3 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div className="p-1.5 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-400">
                 <Camera className="w-4 h-4" />
@@ -854,11 +1085,11 @@ export const SatelliteGesturePilotPage: React.FC = () => {
                 <h2 className="font-heading font-bold text-sm text-slate-100 flex items-center gap-2">
                   <span>Live Face & Hand Camera</span>
                   <span className="text-[10px] font-hud px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30">
-                    {activeEngine.replace('MediaPipe ', '')}
+                    MIRRORED HUD
                   </span>
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Touchless pilot camera · Controls satellite map inside right panel
+                  Touchless gesture feed · Controls satellite map in Right Panel
                 </p>
               </div>
             </div>
@@ -894,10 +1125,34 @@ export const SatelliteGesturePilotPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Left Panel Status Badges Bar (Face Visible, Hand Detected, etc.) */}
-          <div className="p-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs font-hud">
+          {/* Left Panel Status Badges Bar (Required Status Indicators) */}
+          <div className="p-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-1.5 text-xs font-hud">
+            {/* Camera Status */}
+            <div className="px-2 py-0.5 rounded border border-slate-800 bg-slate-900 text-slate-300 flex items-center gap-1.5 text-[11px]">
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                cameraStatus === 'connected'
+                  ? 'bg-emerald-400'
+                  : cameraStatus === 'permission_requested' || cameraStatus === 'loading'
+                  ? 'bg-amber-400 animate-pulse'
+                  : cameraStatus === 'error'
+                  ? 'bg-rose-400'
+                  : 'bg-slate-500'
+              }`}></span>
+              <span>
+                {cameraStatus === 'connected'
+                  ? 'Camera Ready'
+                  : cameraStatus === 'permission_requested'
+                  ? 'Permission Requested'
+                  : cameraStatus === 'loading'
+                  ? 'Initializing...'
+                  : cameraStatus === 'error'
+                  ? 'Camera Error'
+                  : 'Camera Inactive'}
+              </span>
+            </div>
+
             {/* Face Status Indicator */}
-            <div className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
+            <div className={`px-2 py-0.5 rounded border flex items-center gap-1.5 text-[11px] ${
               faceResult.isFaceDetected
                 ? 'bg-emerald-950/80 text-emerald-300 border-emerald-600/40'
                 : 'bg-slate-900 text-slate-400 border-slate-800'
@@ -907,17 +1162,17 @@ export const SatelliteGesturePilotPage: React.FC = () => {
             </div>
 
             {/* Hand Status Indicator */}
-            <div className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
+            <div className={`px-2 py-0.5 rounded border flex items-center gap-1.5 text-[11px] ${
               gestureState.handDetected
                 ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/40'
                 : 'bg-slate-900 text-slate-400 border-slate-800'
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${gestureState.handDetected ? 'bg-cyan-400 animate-ping' : 'bg-slate-500'}`}></span>
-              <span>{gestureState.handDetected ? `Hand Detected (${gestureState.detectedHandCount})` : 'Hand not detected'}</span>
+              <span>{gestureState.handDetected ? `Hand Detected (${gestureState.detectedHandCount})` : 'Waiting for Hand'}</span>
             </div>
 
             {/* Current Gesture Indicator */}
-            <div className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 flex items-center gap-1.5">
+            <div className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 flex items-center gap-1.5 text-[11px]">
               <span className="text-slate-400">GESTURE:</span>
               <strong className="text-cyan-300 uppercase">
                 {gestureState.currentGesture !== 'none' ? gestureState.currentGesture.replace(/_/g, ' ') : 'Neutral'}
@@ -984,6 +1239,44 @@ export const SatelliteGesturePilotPage: React.FC = () => {
                   {isPreviewVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                 </button>
 
+                {/* Floating Telemetry Debug Overlay on Video */}
+                {showDebugOverlay && (
+                  <div className="absolute top-12 left-3 right-3 z-20 bg-slate-950/95 backdrop-blur-md p-3 rounded-lg border border-cyan-500/40 text-[10px] font-mono text-cyan-300 shadow-2xl space-y-2 pointer-events-none">
+                    <div className="flex items-center justify-between border-b border-cyan-500/30 pb-1.5">
+                      <div className="flex items-center gap-1.5 font-bold text-white uppercase font-hud text-[11px]">
+                        <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Real-Time Gesture Telemetry Inspector</span>
+                      </div>
+                      <span className="text-emerald-400 font-bold">
+                        {debugMetrics?.fps ? `${debugMetrics.fps} FPS` : 'Standby'}
+                      </span>
+                    </div>
+
+                    {debugMetrics ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <div className="text-slate-400 uppercase font-sans text-[9px]">Landmark Coordinates (x, y, z):</div>
+                          <div>Wrist #0: <span className="text-white">{debugMetrics.wrist.x.toFixed(3)}, {debugMetrics.wrist.y.toFixed(3)}, {debugMetrics.wrist.z.toFixed(3)}</span></div>
+                          <div>Thumb Tip #4: <span className="text-white">{debugMetrics.thumbTip.x.toFixed(3)}, {debugMetrics.thumbTip.y.toFixed(3)}, {debugMetrics.thumbTip.z.toFixed(3)}</span></div>
+                          <div>Index Tip #8: <span className="text-white">{debugMetrics.indexTip.x.toFixed(3)}, {debugMetrics.indexTip.y.toFixed(3)}, {debugMetrics.indexTip.z.toFixed(3)}</span></div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="text-slate-400 uppercase font-sans text-[9px]">Pinch & Motion Dynamics:</div>
+                          <div>Pinch Dist: <span className="text-white">{debugMetrics.rawPinchDistance.toFixed(4)}</span> | Ratio: <span className={debugMetrics.rawPinchRatio < debugMetrics.pinchThreshold ? 'text-cyan-400 font-bold' : 'text-slate-300'}>{debugMetrics.rawPinchRatio.toFixed(2)}x</span></div>
+                          <div>Movement Delta: <span className="text-white">dx: {debugMetrics.movementDelta.dx.toFixed(4)}, dy: {debugMetrics.movementDelta.dy.toFixed(4)}</span></div>
+                          <div>Motion Vector: <span className="text-amber-400 font-bold">{debugMetrics.movementDirection}</span></div>
+                          <div>Confidence: <span className="text-emerald-400 font-bold">{(debugMetrics.confidence * 100).toFixed(0)}%</span></div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-slate-400 italic py-1">
+                        Waiting for hand landmark detection stream. Present hand in front of camera.
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Bottom HUD Bar inside preview */}
                 <div className="absolute bottom-3 left-3 right-3 z-20 bg-slate-950/90 backdrop-blur-md p-2 rounded-lg border border-cyan-500/30 text-xs font-hud flex items-center justify-between">
                   <span className="text-slate-400 text-[11px]">
@@ -1011,7 +1304,7 @@ export const SatelliteGesturePilotPage: React.FC = () => {
             )}
           </div>
 
-          {/* Left Panel Bottom Gesture Telemetry & Sensitivity Drawer */}
+          {/* Left Panel Bottom Controls & Manual Gesture Simulator */}
           <div className="p-3 bg-slate-900/90 border-t border-slate-800 space-y-2 text-xs font-hud">
             <div className="flex items-center justify-between text-slate-400">
               <span className="text-slate-500">LAST MAP ACTION:</span>
@@ -1033,16 +1326,18 @@ export const SatelliteGesturePilotPage: React.FC = () => {
                 </button>
               </div>
 
-              <button
-                onClick={() => setShowCalibrationDrawer(!showCalibrationDrawer)}
-                className="text-cyan-400 hover:underline flex items-center gap-1 text-[11px]"
-              >
-                <Sliders className="w-3 h-3" />
-                <span>{showCalibrationDrawer ? 'Hide Settings' : 'Sensitivity & Test'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowCalibrationDrawer(!showCalibrationDrawer)}
+                  className="text-cyan-400 hover:underline flex items-center gap-1 text-[11px]"
+                >
+                  <Sliders className="w-3 h-3" />
+                  <span>{showCalibrationDrawer ? 'Hide Controls' : 'Sensitivity & Simulator'}</span>
+                </button>
+              </div>
             </div>
 
-            {/* Gesture Sensitivity & Calibration Drawer */}
+            {/* Manual Gesture Simulator & Sensitivity Drawer */}
             {showCalibrationDrawer && (
               <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2.5 mt-2 animate-fadeIn">
                 <div className="flex items-center justify-between">
@@ -1059,45 +1354,52 @@ export const SatelliteGesturePilotPage: React.FC = () => {
                   className="w-full accent-cyan-400 h-1 bg-slate-800 rounded"
                 />
 
-                {/* Instant Gesture Simulator Test Buttons */}
+                {/* Instant Gesture Simulator Test Buttons (Requirement: Test actions even if camera is off) */}
                 <div className="pt-2 border-t border-slate-900">
-                  <span className="text-[10px] text-slate-400 block mb-1.5">MANUAL GESTURE VERIFIER:</span>
-                  <div className="grid grid-cols-3 gap-1 text-[10px]">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] text-slate-400">MANUAL GESTURE TRIGGER PANEL:</span>
+                    <span className="text-[9px] text-emerald-400">Always Active</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5 text-[10px]">
                     <button
                       onClick={() => executeMapGestureAction('pinch_zoom_in', 0.99)}
-                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-800 flex items-center justify-center gap-1"
+                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-cyan-300 border border-slate-800 flex items-center justify-center gap-1 transition-colors"
+                      title="Simulate Pinch Gesture (Zoom In)"
                     >
-                      <ZoomIn className="w-3 h-3" /> Zoom In
+                      <ZoomIn className="w-3 h-3 text-cyan-400" /> Pinch (+1)
                     </button>
                     <button
                       onClick={() => executeMapGestureAction('open_hand_zoom_out', 0.99)}
-                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-800 flex items-center justify-center gap-1"
+                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-cyan-300 border border-slate-800 flex items-center justify-center gap-1 transition-colors"
+                      title="Simulate Open Hand Gesture (Zoom Out)"
                     >
-                      <ZoomOut className="w-3 h-3" /> Zoom Out
+                      <ZoomOut className="w-3 h-3 text-cyan-400" /> Open (-1)
                     </button>
                     <button
-                      onClick={() => executeMapGestureAction('pan_left', 0.99)}
-                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 flex items-center justify-center gap-1"
+                      onClick={handleResetMap}
+                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 flex items-center justify-center gap-1 transition-colors"
+                      title="Reset Map to Default Center"
                     >
-                      <Move className="w-3 h-3" /> Pan Left
+                      <RotateCcw className="w-3 h-3 text-slate-400" /> Reset View
+                    </button>
+
+                    <button
+                      onClick={() => executeMapGestureAction('pan_left', 0.99)}
+                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-slate-200 border border-slate-800 flex items-center justify-center gap-1 transition-colors"
+                    >
+                      <ArrowLeft className="w-3 h-3 text-amber-400" /> Pan Left
                     </button>
                     <button
                       onClick={() => executeMapGestureAction('pan_right', 0.99)}
-                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 flex items-center justify-center gap-1"
+                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-slate-200 border border-slate-800 flex items-center justify-center gap-1 transition-colors"
                     >
-                      <Move className="w-3 h-3" /> Pan Right
+                      <ArrowRight className="w-3 h-3 text-amber-400" /> Pan Right
                     </button>
                     <button
                       onClick={() => executeMapGestureAction('pan_up', 0.99)}
-                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 flex items-center justify-center gap-1"
+                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-850 text-slate-200 border border-slate-800 flex items-center justify-center gap-1 transition-colors"
                     >
-                      <Move className="w-3 h-3" /> Pan Up
-                    </button>
-                    <button
-                      onClick={() => executeMapGestureAction('pan_down', 0.99)}
-                      className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 flex items-center justify-center gap-1"
-                    >
-                      <Move className="w-3 h-3" /> Pan Down
+                      <ArrowUp className="w-3 h-3 text-amber-400" /> Pan Up
                     </button>
                   </div>
                 </div>
@@ -1110,14 +1412,14 @@ export const SatelliteGesturePilotPage: React.FC = () => {
         {/* RIGHT PANEL — Interactive Satellite Map                     */}
         {/* ============================================================ */}
         <div className="lg:col-span-7 flex flex-col bg-[#070b14] border border-cyan-500/20 rounded-xl overflow-hidden shadow-2xl relative">
-          {/* Right Panel Header: Location Search Bar + My Location Button */}
+          {/* Right Panel Header 1: Location Search Bar + My Location + Map Styles Switcher */}
           <div className="p-3 bg-slate-900/90 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 z-10">
             {/* Search Input Box */}
-            <form onSubmit={handleSearch} className="relative flex-1 min-w-[260px]">
+            <form onSubmit={handleSearch} className="relative flex-1 min-w-[240px]">
               <Search className="w-4 h-4 text-cyan-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="Search place, address, city, or coordinates (e.g. 37.7749, -122.419)..."
+                placeholder="Search place, address, city, or coords (e.g. 37.7749, -122.419)..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-400 rounded-lg pl-9 pr-20 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none font-sans"
@@ -1153,8 +1455,45 @@ export const SatelliteGesturePilotPage: React.FC = () => {
               )}
             </form>
 
-            {/* My Location + Reset View + Layer Toggle Toolbar */}
+            {/* Quick Map Styles Switcher + My Location + Reset */}
             <div className="flex items-center gap-1.5">
+              {/* Quick Map Style One-Click Switcher */}
+              <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-[11px] font-hud">
+                <button
+                  onClick={() => setActiveLayerId('esri_satellite')}
+                  className={`px-2.5 py-1 rounded transition-colors ${
+                    activeLayerId === 'esri_satellite'
+                      ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Satellite Photography"
+                >
+                  Satellite
+                </button>
+                <button
+                  onClick={() => setActiveLayerId('osm_street')}
+                  className={`px-2.5 py-1 rounded transition-colors ${
+                    activeLayerId === 'osm_street'
+                      ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="OpenStreetMap Street View"
+                >
+                  Street
+                </button>
+                <button
+                  onClick={() => setActiveLayerId('osm_dark')}
+                  className={`px-2.5 py-1 rounded transition-colors ${
+                    activeLayerId === 'osm_dark'
+                      ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Tactical Dark Filter"
+                >
+                  Tactical
+                </button>
+              </div>
+
               {/* My Location Button */}
               <button
                 onClick={handleMyLocation}
@@ -1164,30 +1503,6 @@ export const SatelliteGesturePilotPage: React.FC = () => {
               >
                 <Locate className={`w-3.5 h-3.5 ${isLocating ? 'animate-spin text-cyan-400' : 'text-emerald-400'}`} />
                 <span className="hidden sm:inline">My Location</span>
-              </button>
-
-              {/* Nearby CCTV Layer Toggle */}
-              <button
-                onClick={() => setShowNearbyCCTV(!showNearbyCCTV)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-hud border transition-colors ${
-                  showNearbyCCTV
-                    ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/40'
-                    : 'bg-slate-800 text-slate-400 border-slate-700'
-                }`}
-                title="Toggle authorized CCTV node markers"
-              >
-                <Video className="w-3 h-3 text-cyan-400" />
-                <span className="hidden md:inline">CCTV Nodes</span>
-              </button>
-
-              {/* Layer Selection Pill */}
-              <button
-                onClick={() => setShowLayerModal(true)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-hud"
-                title="Change Map Tile Provider"
-              >
-                <Layers className="w-3 h-3 text-cyan-400" />
-                <span className="hidden xl:inline">{currentTileConfig.type === 'satellite' ? 'Satellite' : 'Street'}</span>
               </button>
 
               {/* Reset View Button */}
@@ -1201,36 +1516,65 @@ export const SatelliteGesturePilotPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Right Panel Header 2: Preset Locations Quick Navigation Chips */}
+          <div className="px-3 py-1.5 bg-slate-950/90 border-b border-slate-800/80 flex items-center gap-2 overflow-x-auto text-[11px] font-hud z-10 scrollbar-none">
+            <span className="text-slate-500 uppercase tracking-wider text-[10px] shrink-0 flex items-center gap-1">
+              <Compass className="w-3 h-3 text-cyan-400" /> Presets:
+            </span>
+            {PRESET_LOCATIONS.map((preset, idx) => (
+              <button
+                key={idx}
+                onClick={() => selectLocation(preset)}
+                className="px-2.5 py-0.5 rounded-full bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-cyan-300 border border-slate-800 shrink-0 transition-colors"
+              >
+                {preset.displayName.split(',')[0]}
+              </button>
+            ))}
+          </div>
+
           {/* Leaflet DOM Map Container (Independent Right Panel) */}
           <div ref={mapContainerRef} className="flex-1 w-full relative z-0 outline-none" />
 
-          {/* Floating On-Map Floating Controls (Zoom Buttons & Floating HUD) */}
-          <div className="absolute top-16 right-3 z-10 flex flex-col gap-1 bg-[#070b14]/90 backdrop-blur-md p-1 rounded-lg border border-slate-800 shadow-xl">
+          {/* Floating On-Map Controls (Manual Zoom Buttons) */}
+          <div className="absolute top-24 right-3 z-10 flex flex-col gap-1 bg-[#070b14]/90 backdrop-blur-md p-1 rounded-lg border border-slate-800 shadow-xl">
             <button
               onClick={() => handleManualZoom(1)}
               className="p-2 rounded bg-slate-900 hover:bg-slate-800 text-slate-200 hover:text-cyan-300 transition-colors"
-              title="Zoom In (+1)"
+              title="Manual Zoom In (+1)"
             >
               <ZoomIn className="w-4 h-4" />
             </button>
             <button
               onClick={() => handleManualZoom(-1)}
               className="p-2 rounded bg-slate-900 hover:bg-slate-800 text-slate-200 hover:text-cyan-300 transition-colors"
-              title="Zoom Out (-1)"
+              title="Manual Zoom Out (-1)"
             >
               <ZoomOut className="w-4 h-4" />
             </button>
           </div>
 
+          {/* Visual Indicator Overlay: Whenever a gesture triggers a map action */}
+          {actionAlert && (
+            <div className="absolute top-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none animate-bounce">
+              <div className="bg-[#070b14]/95 border-2 border-cyan-400 text-cyan-200 px-4 py-2 rounded-xl shadow-[0_0_24px_rgba(6,182,212,0.6)] flex items-center gap-2.5 text-xs font-hud tracking-wide font-bold backdrop-blur-md">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+                </span>
+                <span>{actionAlert.text}</span>
+              </div>
+            </div>
+          )}
+
           {/* Active Gesture Map Control Overlay Indicator */}
           {gestureState.isActive && isGestureControlEnabled && (
-            <div className="absolute top-16 left-3 z-10 bg-[#070b14]/95 border border-cyan-400/60 rounded-lg p-2.5 text-xs font-hud shadow-[0_0_20px_rgba(6,182,212,0.3)] pointer-events-none">
+            <div className="absolute top-24 left-3 z-10 bg-[#070b14]/95 border border-cyan-400/60 rounded-lg p-2 text-xs font-hud shadow-[0_0_20px_rgba(6,182,212,0.3)] pointer-events-none">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                <span className="text-cyan-300 font-bold uppercase tracking-wide">GESTURE MAP CONTROL ACTIVE</span>
+                <span className="text-cyan-300 font-bold uppercase tracking-wide text-[11px]">GESTURE CONTROL ACTIVE</span>
               </div>
               <div className="text-slate-400 text-[10px] mt-0.5">
-                Pinch = Zoom In | Open Hand = Zoom Out | Move Hand = Pan
+                Pinch = Zoom In | Open Hand = Zoom Out | Move = Pan
               </div>
             </div>
           )}
@@ -1252,7 +1596,7 @@ export const SatelliteGesturePilotPage: React.FC = () => {
               </span>
               <span className="text-slate-600">|</span>
               <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-cyan-300">
-                {currentTileConfig.name}
+                {currentTileConfig.name.split('(')[0].trim()}
               </span>
             </div>
           </div>
@@ -1260,7 +1604,117 @@ export const SatelliteGesturePilotPage: React.FC = () => {
       </div>
 
       {/* ============================================================== */}
-      {/* MODAL 1: TILE LAYER SELECTION & CUSTOM SATELLITE CONFIGURATION */}
+      {/* MODAL 1: USER GUIDE & HAND POSITIONING TUTORIAL                */}
+      {/* ============================================================== */}
+      {showUserGuideModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0b1221] border border-cyan-500/40 rounded-xl max-w-2xl w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 rounded-lg bg-cyan-950 border border-cyan-500/40 text-cyan-400">
+                  <Hand className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-heading font-bold text-slate-100 text-base">
+                    Touchless Hand Gesture & Camera Guide
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    How to position your hands and pilot the satellite map
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowUserGuideModal(false)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs text-slate-300 leading-relaxed max-h-[70vh] overflow-y-auto pr-1">
+              {/* Hand Positioning */}
+              <div className="p-3.5 bg-slate-900/80 rounded-lg border border-slate-800 space-y-2">
+                <h4 className="font-heading font-semibold text-slate-100 text-sm flex items-center gap-2">
+                  <Camera className="w-4 h-4 text-cyan-400" />
+                  <span>1. Webcam & Hand Positioning</span>
+                </h4>
+                <ul className="list-disc list-inside space-y-1 text-slate-400 pl-1">
+                  <li>Position yourself <strong>1.5 to 3 feet (45–90 cm)</strong> away from your webcam.</li>
+                  <li>Ensure moderate front lighting so your face and hand fingers are clearly outlined.</li>
+                  <li>Keep your hand within the camera frame so all <strong>21 skeletal landmarks</strong> are tracked.</li>
+                </ul>
+              </div>
+
+              {/* Gesture Mappings */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="p-3 bg-slate-900/60 rounded-lg border border-cyan-500/30 space-y-1.5">
+                  <div className="font-heading font-bold text-cyan-300 text-xs flex items-center gap-1.5">
+                    <ZoomIn className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>PINCH &rarr; ZOOM IN</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Touch your <strong>Thumb tip and Index finger tip</strong> together. The satellite map zooms in by +1 step.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-slate-900/60 rounded-lg border border-cyan-500/30 space-y-1.5">
+                  <div className="font-heading font-bold text-cyan-300 text-xs flex items-center gap-1.5">
+                    <ZoomOut className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>OPEN HAND &rarr; ZOOM OUT</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Spread all <strong>5 fingers wide outward</strong>. The satellite map zooms out by -1 step.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-slate-900/60 rounded-lg border border-amber-500/30 space-y-1.5">
+                  <div className="font-heading font-bold text-amber-300 text-xs flex items-center gap-1.5">
+                    <Move className="w-3.5 h-3.5 text-amber-400" />
+                    <span>MOVE &rarr; PAN MAP</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Move your open hand <strong>Left, Right, Up, or Down</strong> to pan the satellite map in that direction.
+                  </p>
+                </div>
+              </div>
+
+              {/* Anti-Jitter & Dead Zone */}
+              <div className="p-3.5 bg-slate-900/80 rounded-lg border border-slate-800 space-y-1.5">
+                <h4 className="font-heading font-semibold text-slate-100 text-xs flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-emerald-400" />
+                  <span>Jitter Prevention & Dead Zone Filtering</span>
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  Built-in exponential smoothing and a directional dead zone prevent involuntary tremors from shaking the map. Action cooldown timers prevent rapid accidental zooms.
+                </p>
+              </div>
+
+              {/* Manual Fallback */}
+              <div className="p-3.5 bg-slate-900/80 rounded-lg border border-slate-800 space-y-1.5">
+                <h4 className="font-heading font-semibold text-slate-100 text-xs flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-cyan-400" />
+                  <span>Manual Simulator Fallback</span>
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  No webcam or camera permission denied? Click <strong>"Sensitivity & Simulator"</strong> in the left panel to test all map actions using the manual gesture trigger buttons.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-3 border-t border-slate-800">
+              <button
+                onClick={() => setShowUserGuideModal(false)}
+                className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-xs font-heading"
+              >
+                Got It, Let's Pilot!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 2: TILE LAYER SELECTION & CUSTOM SATELLITE CONFIGURATION */}
       {/* ============================================================== */}
       {showLayerModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1355,7 +1809,7 @@ export const SatelliteGesturePilotPage: React.FC = () => {
       )}
 
       {/* ============================================================== */}
-      {/* MODAL 2: DEDICATED CCTV FEED WITH PEOPLE & DOG OBJECT DETECTION */}
+      {/* MODAL 3: DEDICATED CCTV FEED WITH PEOPLE & DOG OBJECT DETECTION */}
       {/* ============================================================== */}
       {selectedCameraForModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
