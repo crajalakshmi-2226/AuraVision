@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Logo } from '../common/Logo';
+import { PWAInstallButton } from '../common/PWAInstallButton';
 
 export const Header: React.FC = () => {
   const {
@@ -140,6 +141,9 @@ export const Header: React.FC = () => {
             <Hand className="w-3.5 h-3.5 text-cyan-400" />
             <span className="hidden sm:inline">Satellite Pilot</span>
           </button>
+
+          {/* PWA Install Button */}
+          <PWAInstallButton />
 
           {/* Real NVR / RTSP Guide Button */}
           <button

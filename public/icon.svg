@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="50%" stop-color="#0b1329"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.05"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- Radar Rings -->
+  <circle cx="256" cy="256" r="190" fill="none" stroke="#0e7490" stroke-width="2" stroke-dasharray="6,6" opacity="0.4"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#0e7490" stroke-width="1.5" opacity="0.5"/>
+  <circle cx="256" cy="256" r="80" fill="none" stroke="#06b6d4" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- Crosshairs -->
+  <line x1="256" y1="56" x2="256" y2="456" stroke="#0891b2" stroke-width="1.5" opacity="0.25"/>
+  <line x1="56" y1="256" x2="456" y2="256" stroke="#0891b2" stroke-width="1.5" opacity="0.25"/>
+
+  <!-- Shield Shape -->
+  <path d="M 256 100 L 376 150 C 376 270 256 366 256 366 C 256 366 136 270 136 150 Z" 
+        fill="url(#shieldGrad)" stroke="#22d3ee" stroke-width="6" stroke-linejoin="round" filter="url(#glow)"/>
+
+  <!-- Eye / Vision Iris -->
+  <ellipse cx="256" cy="226" rx="64" ry="40" fill="none" stroke="#38bdf8" stroke-width="5"/>
+  <circle cx="256" cy="226" r="22" fill="#0891b2" stroke="#67e8f9" stroke-width="4"/>
+  <circle cx="264" cy="218" r="7" fill="#ffffff"/>
+
+  <!-- Gesture Hand / Tech Spark -->
+  <path d="M 216 300 L 256 270 L 296 300" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="256" cy="270" r="4" fill="#a5f3fc"/>
+  <circle cx="216" cy="300" r="4" fill="#a5f3fc"/>
+  <circle cx="296" cy="300" r="4" fill="#a5f3fc"/>
+
+  <!-- Outer HUD Corner Accents -->
+  <path d="M 80 120 L 80 80 L 120 80" fill="none" stroke="#22d3ee" stroke-width="4" stroke-linecap="round"/>
+  <path d="M 432 120 L 432 80 L 392 80" fill="none" stroke="#22d3ee" stroke-width="4" stroke-linecap="round"/>
+  <path d="M 80 392 L 80 432 L 120 432" fill="none" stroke="#22d3ee" stroke-width="4" stroke-linecap="round"/>
+  <path d="M 432 392 L 432 432 L 392 432" fill="none" stroke="#22d3ee" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Brand Typography -->
+  <text x="256" y="420" font-family="'JetBrains Mono', 'Chakra Petch', sans-serif" font-size="28" font-weight="700" fill="#e0f2fe" text-anchor="middle" letter-spacing="4">AURAVISION</text>
+  <text x="256" y="446" font-family="'Inter', sans-serif" font-size="14" font-weight="600" fill="#38bdf8" text-anchor="middle" letter-spacing="6">AI DEFENSE PWA</text>
+</svg>
