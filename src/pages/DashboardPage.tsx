@@ -124,6 +124,44 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Interactive AR Hologram Hero Banner */}
+      <div
+        onClick={() => setActiveNav('ar-hologram')}
+        className="cursor-pointer relative overflow-hidden rounded-xl bg-gradient-to-r from-indigo-950/80 via-slate-900 to-cyan-950/70 border border-indigo-500/40 p-5 shadow-2xl transition-all hover:border-cyan-400 hover:shadow-[0_0_25px_rgba(99,102,241,0.25)] group"
+      >
+        <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-gradient-to-l from-cyan-500/10 to-transparent pointer-events-none" />
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1.5 max-w-2xl">
+            <div className="flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-cyan-400 animate-ping" />
+              <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-cyan-300 px-2 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/30">
+                NEW • MOBILE AR HOLOGRAM
+              </span>
+              <span className="text-xs text-indigo-300 font-mono">11 Anime Characters</span>
+            </div>
+            <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight group-hover:text-cyan-300 transition-colors">
+              Hold the Entire Universe in Your Palm — With Your Favorite Anime Character
+            </h2>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Experience real-time phone camera palm tracking. Place Goku, Gojo, Luffy, Naruto, Levi, or your custom hero standing directly in your hand while exploring nested 3D scales from the Observable Universe down to streets and buildings.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveNav('ar-hologram');
+              }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg shadow-cyan-600/30 transition-all active:scale-95 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4 text-cyan-200" />
+              <span>Launch AR Hologram</span>
+              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* KPI Overview Metrics (Actual Application State) */}
       <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Metric 1: Configured Conditions */}

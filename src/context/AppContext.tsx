@@ -73,7 +73,7 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeNav, setActiveNav] = useState<ActiveNav>('pilot');
+  const [activeNav, setActiveNav] = useState<ActiveNav>('ar-hologram');
   const [selectedConditionId, setSelectedConditionId] = useState<ConditionId>('c1_library_occupancy');
   const [conditions, setConditions] = useState<MonitoringCondition[]>(() => {
     const saved = localStorage.getItem('auravision_conditions');

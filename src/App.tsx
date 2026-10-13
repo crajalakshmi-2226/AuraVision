@@ -12,9 +12,10 @@ import { HardwareManagerPage } from './pages/HardwareManagerPage';
 import { GestureStudioPage } from './pages/GestureStudioPage';
 import { ActivityHistoryPage } from './pages/ActivityHistoryPage';
 import { SatelliteGesturePilotPage } from './pages/SatelliteGesturePilotPage';
+import { ARPalmUniverseHologramPage } from './pages/ARPalmUniverseHologramPage';
 import { RtspGuideModal } from './pages/RtspGuideModal';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
-import { Menu, MapPin, Compass, Shield, Globe } from 'lucide-react';
+import { Menu, MapPin, Compass, Shield, Globe, Sparkles } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
   const { activeNav, setActiveNav, setIsRTSPGuideOpen } = useApp();
@@ -87,6 +88,12 @@ const MainLayout: React.FC = () => {
             {activeNav === 'camera' && (
               <ErrorBoundary fallbackTitle="CCTV & Optical Feed Explorer Recovery">
                 <CameraExplorerPage />
+              </ErrorBoundary>
+            )}
+
+            {activeNav === 'ar-hologram' && (
+              <ErrorBoundary fallbackTitle="AR Palm Universe Hologram Recovery">
+                <ARPalmUniverseHologramPage />
               </ErrorBoundary>
             )}
 

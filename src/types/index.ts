@@ -148,6 +148,7 @@ export type ActiveNav =
   | 'map'
   | 'pilot'
   | 'camera'
+  | 'ar-hologram'
   | 'conditions'
   | 'condition-detail'
   | 'alerts'

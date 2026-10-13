@@ -142,6 +142,20 @@ export const Header: React.FC = () => {
             <span className="hidden sm:inline">Satellite Pilot</span>
           </button>
 
+          {/* AURAVERSE-UNI Quick Launch Button */}
+          <button
+            onClick={() => setActiveNav('ar-hologram')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition-all ${
+              activeNav === 'ar-hologram'
+                ? 'bg-cyan-500/30 text-cyan-200 border-cyan-400 font-bold shadow-[0_0_14px_rgba(6,182,212,0.4)]'
+                : 'bg-slate-900 text-cyan-300 border-cyan-500/40 hover:bg-slate-850'
+            }`}
+            title="Open Interactive 3D AR Palm Universe Hologram with Anime Characters"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+            <span className="hidden sm:inline">AURAVERSE-UNI</span>
+          </button>
+
           {/* PWA Install Button */}
           <PWAInstallButton />
 

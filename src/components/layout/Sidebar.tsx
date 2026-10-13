@@ -13,6 +13,7 @@ import {
   Menu,
   Shield,
   Sliders,
+  Sparkles,
   X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -58,6 +59,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
       icon: Camera,
       badge: 'DUAL VIEW',
       badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold',
+    },
+    {
+      id: 'ar-hologram',
+      label: 'AURAVERSE-UNI (Palm Universe)',
+      icon: Sparkles,
+      badge: 'MY UNIVERSE',
+      badgeColor: 'bg-cyan-500/25 text-cyan-300 border border-cyan-400 font-bold shadow-[0_0_12px_rgba(6,182,212,0.4)]',
     },
     {
       id: 'conditions',
